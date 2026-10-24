@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IronDiscipline</string>
+    <string name="accessibility_service_label">IronDiscipline Focus Shield</string>
+    <string name="accessibility_service_description">Monitors foreground app launches, browser social media URLs, and protects Strict Mode settings from self-sabotage during active focus sessions.</string>
+</resources>
