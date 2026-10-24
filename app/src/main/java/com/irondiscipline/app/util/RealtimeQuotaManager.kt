@@ -151,16 +151,15 @@ class RealtimeQuotaManager private constructor(context: Context) {
         limitSecondsCache.clear()
         lockedUntilCache.clear()
 
-        val defaultLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
+        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
 
         for (target in CoreTargetApp.entries) {
             val key = target.appKey
             val used = prefs.getInt(PREFIX_USED_SEC + key, 0)
-            val limit = prefs.getInt(PREFIX_LIMIT_SEC + key, defaultLimit)
             val lockedUntil = prefs.getLong(PREFIX_LOCKED_UNTIL + key, 0L)
 
             usedSecondsCache[key] = used
-            limitSecondsCache[key] = limit
+            limitSecondsCache[key] = activeLimit
             lockedUntilCache[key] = lockedUntil
         }
     }
@@ -217,8 +216,7 @@ class RealtimeQuotaManager private constructor(context: Context) {
     }
 
     fun getAppLimitSeconds(appKey: String): Int {
-        val defaultLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
-        return limitSecondsCache[appKey] ?: defaultLimit
+        return if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
     }
 
     fun getUsedSeconds(appKey: String): Int {
@@ -345,8 +343,11 @@ class RealtimeQuotaManager private constructor(context: Context) {
     fun resetAppTimerAndLock(appKey: String) {
         usedSecondsCache[appKey] = 0
         lockedUntilCache[appKey] = 0L
+        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
+        limitSecondsCache[appKey] = activeLimit
         prefs.edit()
             .putInt(PREFIX_USED_SEC + appKey, 0)
+            .putInt(PREFIX_LIMIT_SEC + appKey, activeLimit)
             .putLong(PREFIX_LOCKED_UNTIL + appKey, 0L)
             .commit()
         publishSnapshot()
@@ -406,10 +407,11 @@ class RealtimeQuotaManager private constructor(context: Context) {
             .putString(KEY_TRACKED_DATE, currentTrackedDate)
             .putBoolean(KEY_IS_TEST_MODE, isTestMode)
 
+        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
         for (target in CoreTargetApp.entries) {
             val key = target.appKey
             editor.putInt(PREFIX_USED_SEC + key, usedSecondsCache[key] ?: 0)
-            editor.putInt(PREFIX_LIMIT_SEC + key, limitSecondsCache[key] ?: NORMAL_MODE_LIMIT_SECONDS)
+            editor.putInt(PREFIX_LIMIT_SEC + key, activeLimit)
             editor.putLong(PREFIX_LOCKED_UNTIL + key, lockedUntilCache[key] ?: 0L)
         }
         editor.commit()
