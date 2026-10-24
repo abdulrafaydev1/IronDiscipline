@@ -78,6 +78,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        IronDisciplineApp.isMainActivityVisible = true
+    }
+
+    override fun onPause() {
+        IronDisciplineApp.isMainActivityVisible = false
+        super.onPause()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -279,6 +289,7 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                     permissionState = permissionState,
                     onActivateOneMinuteTestMode = viewModel::activateOneMinuteTestMode,
                     onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
+                    onUnlockAndResetTimerForTesting = viewModel::unlockAndResetTimerForTesting,
                     onActivateStrictMode = viewModel::activateStrictMode,
                     onUpdateMotivationalQuote = viewModel::updateMotivationalQuote,
                     onSelectTimerPreset = viewModel::setDeepWorkPresetMinutes,

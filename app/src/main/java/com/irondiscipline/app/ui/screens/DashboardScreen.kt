@@ -94,6 +94,7 @@ fun DashboardScreen(
     permissionState: PermissionStatusState,
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit,
+    onUnlockAndResetTimerForTesting: () -> Unit,
     onActivateStrictMode: (durationHours: Int, allowEmergencyOverride: Boolean) -> Unit,
     onUpdateMotivationalQuote: (String) -> Unit,
     onSelectTimerPreset: (Int) -> Unit,
@@ -163,7 +164,8 @@ fun DashboardScreen(
         TestAppBlockerAndLiveQuotaCard(
             quotaSnapshot = realtimeQuotaState,
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
-            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode
+            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode,
+            onUnlockAndResetTimerForTesting = onUnlockAndResetTimerForTesting
         )
 
         // 3. MIDDLE SECTION: Deep Work Focus Timer (Pomodoro / Custom Duration)
@@ -268,10 +270,16 @@ fun DashboardScreen(
 private fun TestAppBlockerAndLiveQuotaCard(
     quotaSnapshot: RealtimeQuotaSnapshot,
     onActivateOneMinuteTestMode: () -> Unit,
-    onSwitchBackToNormalThirtyMinMode: () -> Unit
+    onSwitchBackToNormalThirtyMinMode: () -> Unit,
+    onUnlockAndResetTimerForTesting: () -> Unit
 ) {
     val isTestMode = quotaSnapshot.isTestModeActive
-    val accentColor = if (isTestMode) NeonAmber else NeonCyan
+    val isLocked = quotaSnapshot.isLockedNow
+    val accentColor = when {
+        isLocked -> NeonCrimson
+        isTestMode -> NeonAmber
+        else -> NeonCyan
+    }
 
     Card(
         modifier = Modifier
@@ -292,7 +300,7 @@ private fun TestAppBlockerAndLiveQuotaCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.Bolt,
+                        imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Bolt,
                         contentDescription = null,
                         tint = accentColor,
                         modifier = Modifier.size(22.dp)
@@ -309,7 +317,7 @@ private fun TestAppBlockerAndLiveQuotaCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Mode Status Badge + Headline Live Remaining Time (MM:SS)
+            // Mode Status Badge + Headline Live Remaining Time (MM:SS or Lock HH:MM:SS)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -332,18 +340,27 @@ private fun TestAppBlockerAndLiveQuotaCard(
                         fontSize = 13.sp
                     )
                     Text(
-                        text = "1-Second Live Foreground Countdown Engine",
-                        color = TextSecondary,
+                        text = if (isLocked) {
+                            "🚫 APPS LOCKED • Unlock in ${quotaSnapshot.formattedLockRemainingHhMmSs}"
+                        } else {
+                            "Used: ${quotaSnapshot.usedSecondsToday}s / ${quotaSnapshot.activeLimitSeconds}s"
+                        },
+                        color = if (isLocked) NeonCrimson else TextSecondary,
+                        fontWeight = FontWeight.SemiBold,
                         fontSize = 11.sp
                     )
                 }
 
                 Text(
-                    text = "${quotaSnapshot.formattedHeadlineRemainingMmSs} remaining",
-                    color = if (quotaSnapshot.headlineRemainingSeconds <= 10) NeonCrimson else NeonLime,
+                    text = if (isLocked) {
+                        "LOCKED (${quotaSnapshot.formattedLockRemainingHhMmSs})"
+                    } else {
+                        "${quotaSnapshot.formattedHeadlineRemainingMmSs} remaining"
+                    },
+                    color = if (isLocked || quotaSnapshot.headlineRemainingSeconds <= 10) NeonCrimson else NeonLime,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Black,
-                    fontSize = 15.sp
+                    fontSize = 14.sp
                 )
             }
 
@@ -352,9 +369,9 @@ private fun TestAppBlockerAndLiveQuotaCard(
             // Live MM:SS Remaining Time for each of the 4 Core Target Apps (YouTube, Facebook, Instagram, TikTok)
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 quotaSnapshot.coreStatuses.forEach { status ->
-                    val isLocked = status.remainingSeconds <= 0
+                    val appLocked = status.isLocked
                     val barColor = when {
-                        isLocked -> NeonCrimson
+                        appLocked -> NeonCrimson
                         isTestMode -> NeonAmber
                         else -> NeonCyan
                     }
@@ -377,12 +394,12 @@ private fun TestAppBlockerAndLiveQuotaCard(
                                 fontSize = 13.sp
                             )
                             Text(
-                                text = if (isLocked) {
-                                    "00:00 remaining (BLOCKED)"
+                                text = if (appLocked) {
+                                    "LOCKED (${quotaSnapshot.formattedLockRemainingHhMmSs})"
                                 } else {
                                     "${status.formattedRemainingMmSs} remaining"
                                 },
-                                color = if (isLocked) NeonCrimson else NeonLime,
+                                color = if (appLocked) NeonCrimson else NeonLime,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 13.sp
@@ -404,12 +421,12 @@ private fun TestAppBlockerAndLiveQuotaCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Primary Button: Activate 1-Min Test Mode (or Reset 1-Min Test Counter)
+            // 1. Activate 1-Min Test Mode (60s) Button
             Button(
                 onClick = onActivateOneMinuteTestMode,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp),
+                    .height(48.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = NeonAmber,
@@ -419,40 +436,62 @@ private fun TestAppBlockerAndLiveQuotaCard(
                 Icon(imageVector = Icons.Default.Bolt, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isTestMode) {
-                        "Restart 1-Min Test Mode (Reset to 00:60)"
-                    } else {
-                        "Activate 1-Min Test Mode"
-                    },
+                    text = "Activate 1-Min Test Mode (60s)",
                     fontWeight = FontWeight.Black,
-                    fontSize = 14.sp
+                    fontSize = 13.sp
                 )
             }
 
-            // Secondary Button when in Test Mode (or to reset 30-Min Normal Mode)
-            if (isTestMode) {
-                Spacer(modifier = Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = onSwitchBackToNormalThirtyMinMode,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(46.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = null,
-                        tint = NeonCyan,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Switch Back to 30-Min Normal Mode & Reset",
-                        color = NeonCyan,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 2. 30-Min Normal Mode Button
+            OutlinedButton(
+                onClick = onSwitchBackToNormalThirtyMinMode,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Timer,
+                    contentDescription = null,
+                    tint = NeonCyan,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "30-Min Normal Mode",
+                    color = NeonCyan,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 3. Dedicated "Unlock & Reset Timer (For Testing)" Button
+            Button(
+                onClick = onUnlockAndResetTimerForTesting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = NeonLime,
+                    contentColor = DarkBg
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LockOpen,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Unlock & Reset Timer (For Testing)",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
+                )
             }
         }
     }

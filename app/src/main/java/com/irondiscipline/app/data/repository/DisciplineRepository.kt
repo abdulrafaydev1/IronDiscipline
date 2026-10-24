@@ -202,7 +202,6 @@ class DisciplineRepository(
         dao.resetUsedSecondsForDate(todayStr)
         usageTrackerHelper.resetInternalCounters()
 
-        // Ensure all 4 core targets are enabled for blocking
         for ((pkg, name) in AppBlockRule.HIGH_RISK_TARGETS) {
             val existing = dao.getAppRule(pkg)
             dao.upsertAppRule(
@@ -243,6 +242,32 @@ class DisciplineRepository(
                 )
             )
         }
+    }
+
+    /**
+     * Explicit "Unlock & Reset Timer (For Testing)" action from Dashboard.
+     * Sets used_seconds_today = 0 and is_locked_until_epoch_ms = 0.
+     */
+    suspend fun unlockAndResetTimerForTesting() {
+        val todayStr = LocalDate.now().toString()
+        realtimeQuotaManager?.unlockAndResetTimerForTesting()
+        dao.resetUsedSecondsForDate(todayStr)
+        usageTrackerHelper.resetInternalCounters()
+    }
+
+    suspend fun syncRealtimeTickToRoom(packageName: String, usedSecondsToday: Int) {
+        val todayStr = LocalDate.now().toString()
+        val canonicalPkg = CoreTargetApp.canonicalKeyForPackage(packageName)
+        val existingLog = dao.getUsageLogForPackage(todayStr, canonicalPkg)
+        dao.upsertUsageLog(
+            DailyUsageLog(
+                dateString = todayStr,
+                packageName = canonicalPkg,
+                usedSeconds = usedSecondsToday.toLong(),
+                blockedAttemptsCount = existingLog?.blockedAttemptsCount ?: 0,
+                lastUpdatedEpochMs = System.currentTimeMillis()
+            )
+        )
     }
 
     /**

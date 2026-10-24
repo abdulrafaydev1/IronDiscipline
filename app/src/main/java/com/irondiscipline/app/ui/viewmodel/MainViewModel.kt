@@ -12,6 +12,7 @@ import com.irondiscipline.app.data.local.entities.ScheduleBlock
 import com.irondiscipline.app.data.repository.DisciplineRepository
 import com.irondiscipline.app.domain.model.InstalledAppInfo
 import com.irondiscipline.app.domain.model.PermissionStatusState
+import com.irondiscipline.app.service.AppBlockerAccessibilityService
 import com.irondiscipline.app.service.DisciplineMonitorService
 import com.irondiscipline.app.util.PermissionHelper
 import com.irondiscipline.app.util.RealtimeQuotaManager
@@ -170,8 +171,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var tickCounter = 0
             while (isActive) {
                 delay(1000L)
-                _clockTickMs.value = System.currentTimeMillis()
-                realtimeQuotaManager.checkMidnightResetIfNeeded()
+                val nowMs = System.currentTimeMillis()
+                _clockTickMs.value = nowMs
+                realtimeQuotaManager.refreshSnapshotNow(nowMs)
                 tickCounter++
                 if (tickCounter % 5 == 0) {
                     repository.syncTodayUsageLogs()
@@ -190,10 +192,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _statusBannerMessage.value = msg
     }
 
-    // --- 1-Minute Test Mode vs 30-Minute Normal Mode Actions ---
+    // --- 1-Minute Test Mode vs 30-Minute Normal Mode & Reset Actions ---
     fun activateOneMinuteTestMode() {
         viewModelScope.launch(Dispatchers.IO) {
             repository.activateOneMinuteTestMode()
+            AppBlockerAccessibilityService.dismissOverlayIfShowing()
             postBannerMessage("1-Min Test Mode ACTIVE (60s limit). Open YouTube/IG/TikTok/FB to test live blocking!")
         }
     }
@@ -201,7 +204,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun switchBackToNormalThirtyMinModeAndReset() {
         viewModelScope.launch(Dispatchers.IO) {
             repository.switchBackToNormalThirtyMinModeAndReset()
-            postBannerMessage("Switched back to Normal Mode (30 Mins / 1800s limit) & reset usage counter.")
+            AppBlockerAccessibilityService.dismissOverlayIfShowing()
+            postBannerMessage("Switched to 30-Min Normal Mode (1800s limit) & reset lock/timer.")
+        }
+    }
+
+    fun unlockAndResetTimerForTesting() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.unlockAndResetTimerForTesting()
+            AppBlockerAccessibilityService.dismissOverlayIfShowing()
+            postBannerMessage("Unlocked & Reset Timer (used_seconds_today = 0, is_locked_until_epoch_ms = 0).")
         }
     }
 
