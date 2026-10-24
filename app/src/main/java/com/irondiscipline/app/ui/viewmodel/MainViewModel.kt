@@ -14,6 +14,8 @@ import com.irondiscipline.app.domain.model.InstalledAppInfo
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.service.DisciplineMonitorService
 import com.irondiscipline.app.util.PermissionHelper
+import com.irondiscipline.app.util.RealtimeQuotaManager
+import com.irondiscipline.app.util.RealtimeQuotaSnapshot
 import com.irondiscipline.app.util.UsageTrackerHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,10 +56,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val context = application.applicationContext
     private val database = IronDisciplineDatabase.getInstance(context)
     private val usageTrackerHelper = UsageTrackerHelper.getInstance(context)
-    private val repository = DisciplineRepository(database.disciplineDao(), usageTrackerHelper)
+    private val realtimeQuotaManager = RealtimeQuotaManager.getInstance(context)
+    private val repository = DisciplineRepository(
+        dao = database.disciplineDao(),
+        usageTrackerHelper = usageTrackerHelper,
+        realtimeQuotaManager = realtimeQuotaManager
+    )
 
     private val todayDateString: String
         get() = LocalDate.now().toString()
+
+    // --- Real-Time 1-Second Quota Snapshot Flow (30-Min Normal Mode & 1-Min Test Mode) ---
+    val realtimeQuotaState: StateFlow<RealtimeQuotaSnapshot> = realtimeQuotaManager.quotaSnapshotFlow
 
     // --- Real-Time Permission State ---
     private val _permissionState = MutableStateFlow(
@@ -146,6 +156,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshPermissionsAndApps() {
         _permissionState.value = PermissionHelper.checkAllPermissions(context, usageTrackerHelper)
         DisciplineMonitorService.startServiceIfNeeded(context)
+        realtimeQuotaManager.checkMidnightResetIfNeeded()
         viewModelScope.launch(Dispatchers.IO) {
             repository.getOrCreateDisciplineState()
             val discovered = usageTrackerHelper.getInstalledAndTargetApps()
@@ -160,8 +171,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             while (isActive) {
                 delay(1000L)
                 _clockTickMs.value = System.currentTimeMillis()
+                realtimeQuotaManager.checkMidnightResetIfNeeded()
                 tickCounter++
-                if (tickCounter % 10 == 0) {
+                if (tickCounter % 5 == 0) {
                     repository.syncTodayUsageLogs()
                     _permissionState.value =
                         PermissionHelper.checkAllPermissions(context, usageTrackerHelper)
@@ -176,6 +188,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun postBannerMessage(msg: String) {
         _statusBannerMessage.value = msg
+    }
+
+    // --- 1-Minute Test Mode vs 30-Minute Normal Mode Actions ---
+    fun activateOneMinuteTestMode() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.activateOneMinuteTestMode()
+            postBannerMessage("1-Min Test Mode ACTIVE (60s limit). Open YouTube/IG/TikTok/FB to test live blocking!")
+        }
+    }
+
+    fun switchBackToNormalThirtyMinModeAndReset() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.switchBackToNormalThirtyMinModeAndReset()
+            postBannerMessage("Switched back to Normal Mode (30 Mins / 1800s limit) & reset usage counter.")
+        }
     }
 
     // --- Strict Mode Actions ---
@@ -205,7 +232,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 packageName = appInfo.packageName,
                 appName = appInfo.appName,
                 isHighRisk = appInfo.isHighRisk,
-                dailyQuotaMinutes = 15,
+                dailyQuotaMinutes = 30,
                 blockDuringSchedules = true
             )).copy(
                 appName = appInfo.appName,

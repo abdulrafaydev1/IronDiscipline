@@ -261,7 +261,7 @@ private fun AppTargetRuleItemCard(
     onOpenConfig: () -> Unit
 ) {
     val isBlocked = rule?.isBlocked == true
-    val quotaMinutes = rule?.dailyQuotaMinutes ?: 15
+    val quotaMinutes = rule?.dailyQuotaMinutes ?: 30
     val usedSeconds = usageLog?.usedSeconds ?: 0L
     val usedMinutes = (usedSeconds / 60L).toInt()
     val blockedCount = usageLog?.blockedAttemptsCount ?: 0
@@ -454,9 +454,9 @@ private fun AppQuotaAndScheduleConfigDialog(
         endMinute: Int
     ) -> Unit
 ) {
-    val quotaPresets = listOf(0, 5, 10, 15, 30, 45, 60)
+    val quotaPresets = listOf(0, 1, 5, 15, 30, 45, 60)
     var quotaMinutesText by remember {
-        mutableStateOf((existingRule?.dailyQuotaMinutes ?: 15).toString())
+        mutableStateOf((existingRule?.dailyQuotaMinutes ?: 30).toString())
     }
     var blockDuringSchedules by remember {
         mutableStateOf(existingRule?.blockDuringSchedules ?: true)

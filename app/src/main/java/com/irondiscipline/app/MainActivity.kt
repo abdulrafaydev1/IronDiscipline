@@ -97,6 +97,7 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
     }
 
     val dashboardMetrics by viewModel.dashboardMetrics.collectAsState()
+    val realtimeQuotaState by viewModel.realtimeQuotaState.collectAsState()
     val timerState by viewModel.timerState.collectAsState()
     val permissionState by viewModel.permissionState.collectAsState()
     val installedApps by viewModel.installedApps.collectAsState()
@@ -273,8 +274,11 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
             when (selectedTabIndex) {
                 0 -> DashboardScreen(
                     metrics = dashboardMetrics,
+                    realtimeQuotaState = realtimeQuotaState,
                     timerState = timerState,
                     permissionState = permissionState,
+                    onActivateOneMinuteTestMode = viewModel::activateOneMinuteTestMode,
+                    onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
                     onActivateStrictMode = viewModel::activateStrictMode,
                     onUpdateMotivationalQuote = viewModel::updateMotivationalQuote,
                     onSelectTimerPreset = viewModel::setDeepWorkPresetMinutes,

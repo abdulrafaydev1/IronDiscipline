@@ -12,7 +12,7 @@ data class AppBlockRule(
     val appName: String,
     val isHighRisk: Boolean = false,
     val isBlocked: Boolean = false,
-    val dailyQuotaMinutes: Int = 15,
+    val dailyQuotaMinutes: Int = 30,
     val blockDuringSchedules: Boolean = true,
     val hasCustomSchedule: Boolean = false,
     val customStartHour: Int = 9,
@@ -48,20 +48,20 @@ data class AppBlockRule(
 
     companion object {
         val HIGH_RISK_TARGETS: Map<String, String> = linkedMapOf(
-            "com.instagram.android" to "Instagram",
             "com.google.android.youtube" to "YouTube",
+            "com.facebook.katana" to "Facebook",
+            "com.instagram.android" to "Instagram",
             "com.zhiliaoapp.musically" to "TikTok",
-            "com.ss.android.ugc.trill" to "TikTok (Regional)",
-            "com.facebook.katana" to "Facebook"
+            "com.ss.android.ugc.trill" to "TikTok (Regional)"
         )
 
         val SOCIAL_DOMAIN_TO_PACKAGES: Map<String, List<String>> = mapOf(
-            "instagram.com" to listOf("com.instagram.android"),
             "youtube.com" to listOf("com.google.android.youtube"),
             "youtu.be" to listOf("com.google.android.youtube"),
-            "tiktok.com" to listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill"),
             "facebook.com" to listOf("com.facebook.katana"),
-            "fb.com" to listOf("com.facebook.katana")
+            "fb.com" to listOf("com.facebook.katana"),
+            "instagram.com" to listOf("com.instagram.android"),
+            "tiktok.com" to listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill")
         )
     }
 }

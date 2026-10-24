@@ -24,7 +24,7 @@ import java.time.LocalDate
         DailyUsageLog::class,
         DisciplineStateEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class IronDisciplineDatabase : RoomDatabase() {
@@ -56,7 +56,6 @@ abstract class IronDisciplineDatabase : RoomDatabase() {
                     })
                     .build()
                 INSTANCE = instance
-                // Ensure baseline state exists even if callback races with first read
                 dbScope.launch {
                     ensureSeeded(instance.disciplineDao())
                 }
@@ -65,10 +64,7 @@ abstract class IronDisciplineDatabase : RoomDatabase() {
         }
 
         private suspend fun ensureSeeded(dao: DisciplineDao) {
-            val currentState = dao.getDisciplineStateOnce()
-            if (currentState == null) {
-                seedInitialData(dao)
-            }
+            seedInitialData(dao)
         }
 
         private suspend fun seedInitialData(dao: DisciplineDao) {
@@ -89,30 +85,27 @@ abstract class IronDisciplineDatabase : RoomDatabase() {
                 )
             }
 
-            // 2. Seed pre-configured High-Risk Social Media Targets
-            val existingRules = dao.getAllAppRulesOnce()
-            if (existingRules.isEmpty()) {
-                val defaultRules = AppBlockRule.HIGH_RISK_TARGETS.map { (pkg, name) ->
-                    AppBlockRule(
-                        packageName = pkg,
-                        appName = name,
-                        isHighRisk = true,
-                        isBlocked = true,
-                        dailyQuotaMinutes = 15,
-                        blockDuringSchedules = true,
-                        hasCustomSchedule = false,
-                        customStartHour = 9,
-                        customStartMinute = 0,
-                        customEndHour = 18,
-                        customEndMinute = 0
-                    )
-                }
-                dao.insertAppRulesIgnoreExisting(defaultRules)
+            // 2. Ensure the 4 Pre-Configured Core Targets (YouTube, Facebook, Instagram, TikTok)
+            // exist and are enabled by default with a 30-Minute (1800s) daily time allowance
+            val defaultRules = AppBlockRule.HIGH_RISK_TARGETS.map { (pkg, name) ->
+                AppBlockRule(
+                    packageName = pkg,
+                    appName = name,
+                    isHighRisk = true,
+                    isBlocked = true,
+                    dailyQuotaMinutes = 30,
+                    blockDuringSchedules = true,
+                    hasCustomSchedule = false,
+                    customStartHour = 9,
+                    customStartMinute = 0,
+                    customEndHour = 18,
+                    customEndMinute = 0
+                )
             }
+            dao.insertAppRulesIgnoreExisting(defaultRules)
 
-            // 3. Seed default Focus Schedules (09:00-18:00 Workday & 22:00-07:00 Digital Sunset)
-            val existingSchedules = dao.getEnabledSchedulesOnce()
-            if (existingSchedules.isEmpty()) {
+            // 3. Seed optional Focus Schedules (disabled by default so the 30-min / 1-min countdown works immediately)
+            if (dao.getAllSchedulesOnce().isEmpty()) {
                 dao.upsertSchedule(
                     ScheduleBlock(
                         title = "Deep Work Core Hours",
@@ -122,7 +115,7 @@ abstract class IronDisciplineDatabase : RoomDatabase() {
                         endMinute = 0,
                         daysOfWeekCsv = "1,2,3,4,5",
                         targetPackagesCsv = "*",
-                        isEnabled = true,
+                        isEnabled = false,
                         enforcesStrictMode = false
                     )
                 )
@@ -135,7 +128,7 @@ abstract class IronDisciplineDatabase : RoomDatabase() {
                         endMinute = 0,
                         daysOfWeekCsv = "1,2,3,4,5,6,7",
                         targetPackagesCsv = "*",
-                        isEnabled = true,
+                        isEnabled = false,
                         enforcesStrictMode = true
                     )
                 )

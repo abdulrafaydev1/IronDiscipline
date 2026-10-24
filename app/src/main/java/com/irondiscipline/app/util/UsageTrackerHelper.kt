@@ -81,6 +81,12 @@ class UsageTrackerHelper(private val context: Context) {
     }
 
     @Synchronized
+    fun resetInternalCounters() {
+        internalDailySecondsMap.clear()
+        currentSessionStartEpochMs = System.currentTimeMillis()
+    }
+
+    @Synchronized
     private fun rolloverDateIfNeeded() {
         val today = LocalDate.now().toString()
         if (today != trackedDateString) {

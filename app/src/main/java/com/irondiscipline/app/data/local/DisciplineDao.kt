@@ -39,6 +39,9 @@ interface DisciplineDao {
     @Query("SELECT * FROM schedule_blocks ORDER BY startHour ASC, startMinute ASC")
     fun observeAllSchedules(): Flow<List<ScheduleBlock>>
 
+    @Query("SELECT * FROM schedule_blocks")
+    suspend fun getAllSchedulesOnce(): List<ScheduleBlock>
+
     @Query("SELECT * FROM schedule_blocks WHERE isEnabled = 1")
     suspend fun getEnabledSchedulesOnce(): List<ScheduleBlock>
 
@@ -79,6 +82,9 @@ interface DisciplineDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertUsageLog(log: DailyUsageLog)
+
+    @Query("UPDATE daily_usage_logs SET usedSeconds = 0 WHERE dateString = :dateString")
+    suspend fun resetUsedSecondsForDate(dateString: String)
 
     // --- Discipline State (Streak, Strict Mode, Emergency Unlock, Custom Quote) ---
     @Query("SELECT * FROM discipline_state WHERE id = 1 LIMIT 1")

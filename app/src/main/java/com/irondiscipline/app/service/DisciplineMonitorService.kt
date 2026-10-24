@@ -17,6 +17,7 @@ import com.irondiscipline.app.R
 import com.irondiscipline.app.data.local.IronDisciplineDatabase
 import com.irondiscipline.app.data.repository.DisciplineRepository
 import com.irondiscipline.app.util.PermissionHelper
+import com.irondiscipline.app.util.RealtimeQuotaManager
 import com.irondiscipline.app.util.UsageTrackerHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,12 @@ class DisciplineMonitorService : Service() {
         super.onCreate()
         val database = IronDisciplineDatabase.getInstance(applicationContext)
         usageTrackerHelper = UsageTrackerHelper.getInstance(applicationContext)
-        repository = DisciplineRepository(database.disciplineDao(), usageTrackerHelper)
+        val realtimeQuotaManager = RealtimeQuotaManager.getInstance(applicationContext)
+        repository = DisciplineRepository(
+            dao = database.disciplineDao(),
+            usageTrackerHelper = usageTrackerHelper,
+            realtimeQuotaManager = realtimeQuotaManager
+        )
         createNotificationChannel()
     }
 

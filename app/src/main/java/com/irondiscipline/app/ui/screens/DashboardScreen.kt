@@ -82,14 +82,18 @@ import com.irondiscipline.app.ui.theme.TextPrimary
 import com.irondiscipline.app.ui.theme.TextSecondary
 import com.irondiscipline.app.ui.viewmodel.DashboardMetricsUiState
 import com.irondiscipline.app.ui.viewmodel.DeepWorkTimerUiState
+import com.irondiscipline.app.util.RealtimeQuotaSnapshot
 import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DashboardScreen(
     metrics: DashboardMetricsUiState,
+    realtimeQuotaState: RealtimeQuotaSnapshot,
     timerState: DeepWorkTimerUiState,
     permissionState: PermissionStatusState,
+    onActivateOneMinuteTestMode: () -> Unit,
+    onSwitchBackToNormalThirtyMinMode: () -> Unit,
     onActivateStrictMode: (durationHours: Int, allowEmergencyOverride: Boolean) -> Unit,
     onUpdateMotivationalQuote: (String) -> Unit,
     onSelectTimerPreset: (Int) -> Unit,
@@ -155,7 +159,14 @@ fun DashboardScreen(
             onOpenStrictModeModal = { showStrictModeDialog = true }
         )
 
-        // 2. MIDDLE SECTION: Deep Work Focus Timer (Pomodoro / Custom Duration)
+        // 2. DEDICATED HIGH-VISIBILITY CARD: ⚡ Test App Blocker (1-Min Mode) & Live 30-Min Quota Countdown
+        TestAppBlockerAndLiveQuotaCard(
+            quotaSnapshot = realtimeQuotaState,
+            onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
+            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode
+        )
+
+        // 3. MIDDLE SECTION: Deep Work Focus Timer (Pomodoro / Custom Duration)
         DeepWorkFocusTimerCard(
             timerState = timerState,
             todayDeepWorkMinutes = metrics.todayDeepWorkMinutes,
@@ -166,7 +177,7 @@ fun DashboardScreen(
             onReset = onResetTimer
         )
 
-        // 3. Customizable Block Overlay Quote Card
+        // 4. Customizable Block Overlay Quote Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -215,7 +226,7 @@ fun DashboardScreen(
             }
         }
 
-        // 4. Recent Deep Work Sessions Log
+        // 5. Recent Deep Work Sessions Log
         if (metrics.recentSessions.isNotEmpty()) {
             RecentDeepWorkSessionsCard(sessions = metrics.recentSessions)
         }
@@ -247,6 +258,206 @@ fun DashboardScreen(
     }
 }
 
+/**
+ * High-visibility "⚡ Test App Blocker (1-Min Mode)" & Live 30-Min Quota Card.
+ * Displays the current mode ("Normal Mode: 30 Mins Limit" vs "TEST MODE ACTIVE: 1 Min Limit (60s)"),
+ * live MM:SS remaining countdowns for YouTube, Facebook, Instagram, and TikTok updated every second,
+ * and instant toggle/reset buttons.
+ */
+@Composable
+private fun TestAppBlockerAndLiveQuotaCard(
+    quotaSnapshot: RealtimeQuotaSnapshot,
+    onActivateOneMinuteTestMode: () -> Unit,
+    onSwitchBackToNormalThirtyMinMode: () -> Unit
+) {
+    val isTestMode = quotaSnapshot.isTestModeActive
+    val accentColor = if (isTestMode) NeonAmber else NeonCyan
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.5.dp,
+                color = accentColor,
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkCard)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Bolt,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "⚡ Test App Blocker (1-Min Mode)",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 15.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Mode Status Badge + Headline Live Remaining Time (MM:SS)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accentColor.copy(alpha = 0.14f))
+                    .border(1.dp, accentColor.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isTestMode) {
+                            "TEST MODE ACTIVE: 1 Min Limit (60s)"
+                        } else {
+                            "Normal Mode: 30 Mins Limit"
+                        },
+                        color = accentColor,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = "1-Second Live Foreground Countdown Engine",
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+
+                Text(
+                    text = "${quotaSnapshot.formattedHeadlineRemainingMmSs} remaining",
+                    color = if (quotaSnapshot.headlineRemainingSeconds <= 10) NeonCrimson else NeonLime,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 15.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Live MM:SS Remaining Time for each of the 4 Core Target Apps (YouTube, Facebook, Instagram, TikTok)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                quotaSnapshot.coreStatuses.forEach { status ->
+                    val isLocked = status.remainingSeconds <= 0
+                    val barColor = when {
+                        isLocked -> NeonCrimson
+                        isTestMode -> NeonAmber
+                        else -> NeonCyan
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(DarkSurface)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = status.target.displayName,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = if (isLocked) {
+                                    "00:00 remaining (BLOCKED)"
+                                } else {
+                                    "${status.formattedRemainingMmSs} remaining"
+                                },
+                                color = if (isLocked) NeonCrimson else NeonLime,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(5.dp))
+                        LinearProgressIndicator(
+                            progress = { status.progressFraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = barColor,
+                            trackColor = DarkBg
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Primary Button: Activate 1-Min Test Mode (or Reset 1-Min Test Counter)
+            Button(
+                onClick = onActivateOneMinuteTestMode,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = NeonAmber,
+                    contentColor = DarkBg
+                )
+            ) {
+                Icon(imageVector = Icons.Default.Bolt, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isTestMode) {
+                        "Restart 1-Min Test Mode (Reset to 00:60)"
+                    } else {
+                        "Activate 1-Min Test Mode"
+                    },
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp
+                )
+            }
+
+            // Secondary Button when in Test Mode (or to reset 30-Min Normal Mode)
+            if (isTestMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onSwitchBackToNormalThirtyMinMode,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Switch Back to 30-Min Normal Mode & Reset",
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun TopDisciplineOverviewCard(
     metrics: DashboardMetricsUiState,
@@ -267,7 +478,6 @@ private fun TopDisciplineOverviewCard(
         colors = CardDefaults.cardColors(containerColor = DarkCard)
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            // Header Row: Streak + Strict Mode Pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -305,7 +515,6 @@ private fun TopDisciplineOverviewCard(
                     }
                 }
 
-                // Strict Mode Indicator Button
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
@@ -361,7 +570,6 @@ private fun TopDisciplineOverviewCard(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // Saved Time vs Distraction Time Metrics Grid
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -498,7 +706,6 @@ private fun DeepWorkFocusTimerCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Large Digital Clock Readout
             Text(
                 text = formattedClock,
                 color = if (timerState.isRunning) NeonLime else TextPrimary,
@@ -521,7 +728,6 @@ private fun DeepWorkFocusTimerCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Preset Duration Chips
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
@@ -548,7 +754,6 @@ private fun DeepWorkFocusTimerCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Primary Controls Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
