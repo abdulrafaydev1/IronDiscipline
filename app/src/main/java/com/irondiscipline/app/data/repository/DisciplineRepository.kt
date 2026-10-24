@@ -198,7 +198,7 @@ class DisciplineRepository(
      */
     suspend fun activateOneMinuteTestMode() {
         val todayStr = LocalDate.now().toString()
-        realtimeQuotaManager?.activateOneMinuteTestMode()
+        realtimeQuotaManager?.activateGlobalOneMinuteTestMode()
         dao.resetUsedSecondsForDate(todayStr)
         usageTrackerHelper.resetInternalCounters()
 
@@ -246,13 +246,45 @@ class DisciplineRepository(
 
     /**
      * Explicit "Unlock & Reset Timer (For Testing)" action from Dashboard.
-     * Sets used_seconds_today = 0 and is_locked_until_epoch_ms = 0.
+     * Resets all app timers and locks.
      */
     suspend fun unlockAndResetTimerForTesting() {
         val todayStr = LocalDate.now().toString()
-        realtimeQuotaManager?.unlockAndResetTimerForTesting()
+        realtimeQuotaManager?.resetAllTimersAndLocks()
         dao.resetUsedSecondsForDate(todayStr)
         usageTrackerHelper.resetInternalCounters()
+    }
+
+    suspend fun resetSingleApp(appKey: String) {
+        val todayStr = LocalDate.now().toString()
+        realtimeQuotaManager?.resetAppTimerAndLock(appKey)
+        val coreTarget = CoreTargetApp.fromAppKey(appKey)
+        if (coreTarget != null) {
+            for (pkg in coreTarget.packageNames) {
+                dao.upsertUsageLog(
+                    DailyUsageLog(
+                        dateString = todayStr,
+                        packageName = pkg,
+                        usedSeconds = 0L,
+                        blockedAttemptsCount = 0,
+                        lastUpdatedEpochMs = System.currentTimeMillis()
+                    )
+                )
+            }
+        }
+    }
+
+    suspend fun setAppLimitMinutes(appKey: String, limitMinutes: Int) {
+        realtimeQuotaManager?.setAppLimitMinutes(appKey, limitMinutes)
+        val coreTarget = CoreTargetApp.fromAppKey(appKey)
+        if (coreTarget != null) {
+            for (pkg in coreTarget.packageNames) {
+                val existing = dao.getAppRule(pkg)
+                if (existing != null) {
+                    dao.upsertAppRule(existing.copy(dailyQuotaMinutes = limitMinutes))
+                }
+            }
+        }
     }
 
     suspend fun syncRealtimeTickToRoom(packageName: String, usedSecondsToday: Int) {
@@ -287,23 +319,27 @@ class DisciplineRepository(
             return BlockEvaluationResult(shouldBlock = false)
         }
 
+        val coreTarget = CoreTargetApp.fromPackageName(packageName)
+        if (coreTarget != null) {
+            val usedSecondsToday = realtimeQuotaManager?.incrementUsedSecond(coreTarget.appKey, nowMs) ?: 0
+            val todayStr = LocalDate.now().toString()
+            val existingLog = dao.getUsageLogForPackage(todayStr, canonicalPkg)
+            dao.upsertUsageLog(
+                DailyUsageLog(
+                    dateString = todayStr,
+                    packageName = canonicalPkg,
+                    usedSeconds = usedSecondsToday.toLong(),
+                    blockedAttemptsCount = existingLog?.blockedAttemptsCount ?: 0,
+                    lastUpdatedEpochMs = nowMs
+                )
+            )
+            return evaluatePackageAccess(packageName)
+        }
+
         val rule = resolveRuleForPackage(packageName) ?: return BlockEvaluationResult(shouldBlock = false)
         if (!rule.isBlocked) {
             return BlockEvaluationResult(shouldBlock = false)
         }
-
-        val usedSecondsToday = realtimeQuotaManager?.incrementUsedSecond(packageName) ?: 0
-        val todayStr = LocalDate.now().toString()
-        val existingLog = dao.getUsageLogForPackage(todayStr, canonicalPkg)
-        dao.upsertUsageLog(
-            DailyUsageLog(
-                dateString = todayStr,
-                packageName = canonicalPkg,
-                usedSeconds = usedSecondsToday.toLong(),
-                blockedAttemptsCount = existingLog?.blockedAttemptsCount ?: 0,
-                lastUpdatedEpochMs = nowMs
-            )
-        )
 
         return evaluatePackageAccess(packageName)
     }
@@ -376,9 +412,29 @@ class DisciplineRepository(
 
         val canonicalPkg = CoreTargetApp.canonicalKeyForPackage(packageName)
         val state = getOrCreateDisciplineState()
+        val todayDeepWorkMinutes = dao.getTotalDeepWorkMinutesForDateOnce(todayStr)
         if (state.isTargetInEmergencyUnlock(packageName, nowMs) ||
             state.isTargetInEmergencyUnlock(canonicalPkg, nowMs)
         ) {
+            return BlockEvaluationResult(shouldBlock = false)
+        }
+
+        val coreTarget = CoreTargetApp.fromPackageName(packageName)
+        if (coreTarget != null) {
+            val isLocked = realtimeQuotaManager?.isAppLocked(coreTarget.appKey, nowMs) == true
+            if (isLocked) {
+                return BlockEvaluationResult(
+                    shouldBlock = true,
+                    targetKey = coreTarget.appKey,
+                    displayTitle = coreTarget.displayName,
+                    reasonType = BlockReasonType.DAILY_QUOTA_EXHAUSTED,
+                    reasonDetail = "Aap ka ${coreTarget.displayName} ka usage time pura ho chuka hai. Ab yeh app lock hai.",
+                    canUseEmergencyOverride = false,
+                    currentStreakDays = state.currentStreakDays,
+                    todayDeepWorkMinutes = todayDeepWorkMinutes,
+                    motivationalQuote = state.customQuote
+                )
+            }
             return BlockEvaluationResult(shouldBlock = false)
         }
 
@@ -398,7 +454,6 @@ class DisciplineRepository(
         }
         val scheduleEnforcesStrict = activeSchedules.any { it.enforcesStrictMode }
         val canEmergencyOverride = state.canUseEmergencyUnlockToday(todayStr, scheduleEnforcesStrict)
-        val todayDeepWorkMinutes = dao.getTotalDeepWorkMinutesForDateOnce(todayStr)
 
         // When 1-Minute Test Mode is active on the 4 core targets, prioritize the 60s countdown evaluation
         if (!isTestMode) {

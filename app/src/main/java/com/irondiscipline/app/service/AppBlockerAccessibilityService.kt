@@ -6,6 +6,9 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -14,7 +17,6 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -47,14 +49,24 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private lateinit var usageTrackerHelper: UsageTrackerHelper
     private lateinit var realtimeQuotaManager: RealtimeQuotaManager
     private var windowManager: WindowManager? = null
+    private var audioManager: AudioManager? = null
 
-    // Native Android Overlay Views (Crash-proof, zero ComposeView/ViewTreeLifecycleOwner overhead)
+    // Audio focus & mute state
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var isAudioMutedByUs: Boolean = false
+
+    // Native Android Overlay Views
     private var overlayRootView: FrameLayout? = null
-    private var countdownTimerTextView: TextView? = null
+    private var blockedAppHeaderTextView: TextView? = null
     private var blockedAppSubtitleTextView: TextView? = null
+    private var countdownLabelTextView: TextView? = null
+    private var countdownTimerTextView: TextView? = null
 
     @Volatile
     private var currentForegroundPackage: String? = null
+
+    @Volatile
+    private var currentLockedAppKey: String? = null
 
     @Volatile
     private var lastSecondIncrementEpochMs: Long = 0L
@@ -75,6 +87,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             realtimeQuotaManager = realtimeQuotaManager
         )
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         instance = this
 
         DisciplineMonitorService.startServiceIfNeeded(applicationContext)
@@ -89,12 +102,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Continuous 500ms monitoring & 1-second usage countdown loop.
-     * - Detects foreground app accurately (ignoring keyboard & SystemUI false positives).
-     * - Immediately displays the Native Full-Screen Block Overlay if is_locked_until_epoch_ms > now
-     *   (under 200ms re-open interception).
-     * - Increments used_seconds_today every 1,000ms while a target app is open on screen.
-     * - Updates the live HH:MM:SS unlock countdown timer on the Block Overlay every tick.
+     * Continuous 500ms monitoring & 1-second independent usage countdown loop.
+     * - Checks strictly per-app lock state (YouTube, Facebook, Instagram, TikTok are completely independent).
+     * - When time expires or app is re-opened while locked, pauses/mutes video and shows native overlay.
+     * - Increments used seconds only for the active app.
      */
     private fun startContinuous500msLoop() {
         if (continuousMonitorJob?.isActive == true) return
@@ -104,7 +115,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 val nowMs = System.currentTimeMillis()
                 realtimeQuotaManager.checkExpiryAndMidnightRollover(nowMs)
 
-                // If user is inside IronDiscipline MainActivity (e.g., resetting timer), hide overlay
+                // If user is inside IronDiscipline MainActivity (Dashboard), hide overlay
                 if (IronDisciplineApp.isMainActivityVisible) {
                     if (overlayRootView != null) {
                         hideNativeBlockOverlay()
@@ -112,7 +123,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     continue
                 }
 
-                // Resolve active foreground application package (ignoring keyboard, SystemUI, and our own overlay)
+                // Resolve active foreground application package
                 val detectedPkg = detectForegroundApplicationPackage()
                 if (!detectedPkg.isNullOrBlank() && !isTransientSystemOrKeyboardPackage(detectedPkg)) {
                     if (detectedPkg != packageName) {
@@ -122,7 +133,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
                 val fgPkg = currentForegroundPackage
 
-                // If user navigated to Home Launcher or a non-target app while overlay is showing
+                // If user navigated to Home Launcher, hide overlay and restore audio
                 if (!fgPkg.isNullOrBlank() && isHomeLauncherPackage(fgPkg)) {
                     if (overlayRootView != null) {
                         hideNativeBlockOverlay()
@@ -130,59 +141,64 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     continue
                 }
 
-                // Update live HH:MM:SS countdown if overlay is currently visible
-                if (overlayRootView != null) {
-                    if (!realtimeQuotaManager.isCurrentlyLocked(nowMs) &&
-                        (fgPkg == null || !CoreTargetApp.isCoreTargetPackage(fgPkg))
-                    ) {
-                        hideNativeBlockOverlay()
+                val coreTarget = if (fgPkg != null) CoreTargetApp.fromPackageName(fgPkg) else null
+
+                // 1. Core Target App (YouTube, Facebook, Instagram, TikTok)
+                if (coreTarget != null) {
+                    val isThisAppLocked = realtimeQuotaManager.isAppLocked(coreTarget.appKey, nowMs)
+
+                    if (isThisAppLocked) {
+                        showOrUpdateNativeBlockOverlay(coreTarget, nowMs)
+                        stopVideoAndSilenceAudio()
                         continue
-                    }
-                    updateOverlayLiveCountdownText(nowMs)
-                }
-
-                if (fgPkg.isNullOrBlank() || fgPkg == packageName || isHomeLauncherPackage(fgPkg)) {
-                    continue
-                }
-
-                // 1. Check if foreground package is one of the 4 core target apps (YouTube, Facebook, Instagram, TikTok)
-                if (CoreTargetApp.isCoreTargetPackage(fgPkg)) {
-                    // Check if already in persistent LOCKED STATE (System.currentTimeMillis() < is_locked_until_epoch_ms)
-                    if (realtimeQuotaManager.isCurrentlyLocked(nowMs)) {
-                        showOrUpdateNativeBlockOverlay(fgPkg, nowMs)
-                        continue
-                    }
-
-                    // Otherwise, increment used_seconds_today every 1,000ms (1 second)
-                    if (nowMs - lastSecondIncrementEpochMs >= 980L) {
-                        lastSecondIncrementEpochMs = nowMs
-                        val newUsedSeconds = realtimeQuotaManager.incrementUsedSecond(fgPkg, nowMs)
-                        val limitSeconds = realtimeQuotaManager.getActiveLimitSeconds()
-
-                        // Sync to Room DB asynchronously
-                        serviceScope.launch(Dispatchers.IO) {
-                            repository.syncRealtimeTickToRoom(fgPkg, newUsedSeconds)
+                    } else {
+                        // This core app is NOT locked. If an overlay was showing from another app, dismiss it!
+                        if (overlayRootView != null && currentLockedAppKey != null && currentLockedAppKey != coreTarget.appKey) {
+                            hideNativeBlockOverlay()
                         }
 
-                        // Immediately when used_seconds_today >= limitSeconds, lock and show overlay ON TOP of the app
-                        // (Do NOT call GLOBAL_ACTION_HOME automatically)
-                        if (newUsedSeconds >= limitSeconds || realtimeQuotaManager.isCurrentlyLocked(nowMs)) {
+                        // Increment active foreground seconds for this specific app only
+                        if (nowMs - lastSecondIncrementEpochMs >= 980L) {
+                            lastSecondIncrementEpochMs = nowMs
+                            val newUsed = realtimeQuotaManager.incrementUsedSecond(coreTarget.appKey, nowMs)
+                            val limit = realtimeQuotaManager.getAppLimitSeconds(coreTarget.appKey)
+
                             serviceScope.launch(Dispatchers.IO) {
-                                repository.recordBlockedAttempt(fgPkg)
+                                repository.syncRealtimeTickToRoom(fgPkg!!, newUsed)
                             }
-                            showOrUpdateNativeBlockOverlay(fgPkg, nowMs)
+
+                            if (newUsed >= limit || realtimeQuotaManager.isAppLocked(coreTarget.appKey, nowMs)) {
+                                serviceScope.launch(Dispatchers.IO) {
+                                    repository.recordBlockedAttempt(fgPkg!!)
+                                }
+                                showOrUpdateNativeBlockOverlay(coreTarget, nowMs)
+                                stopVideoAndSilenceAudio()
+                            }
                         }
                     }
-                } else {
-                    // Non-core app: check if it has a custom rule in Room DB
+                } else if (!fgPkg.isNullOrBlank() && fgPkg != packageName && !isHomeLauncherPackage(fgPkg)) {
+                    // Non-core app: check custom rules
                     val customEval = withContext(Dispatchers.IO) {
                         repository.evaluatePackageAccess(fgPkg)
                     }
                     if (customEval.shouldBlock) {
-                        showOrUpdateNativeBlockOverlay(fgPkg, nowMs)
+                        showOrUpdateNonCoreBlockOverlay(customEval.displayTitle, nowMs)
+                        stopVideoAndSilenceAudio()
                     } else if (overlayRootView != null) {
-                        // User switched to a non-blocked app (e.g. Calculator, Notes, WhatsApp)
+                        // User switched to an unblocked app (e.g., WhatsApp, Maps, Notes)
                         hideNativeBlockOverlay()
+                    }
+                }
+
+                // Update live countdown if overlay is visible
+                if (overlayRootView != null) {
+                    val lockedKey = currentLockedAppKey
+                    if (lockedKey != null) {
+                        if (!realtimeQuotaManager.isAppLocked(lockedKey, nowMs)) {
+                            hideNativeBlockOverlay()
+                        } else {
+                            updateOverlayLiveCountdownText(lockedKey, nowMs)
+                        }
                     }
                 }
             }
@@ -193,12 +209,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         val safeEvent = event ?: return
         val pkgName = safeEvent.packageName?.toString() ?: return
 
-        // Ignore transient keyboard / SystemUI events so they never clear currentForegroundPackage
         if (isTransientSystemOrKeyboardPackage(pkgName)) {
             return
         }
 
-        // If event is from our own package, check if MainActivity was opened vs just our overlay
         if (pkgName == packageName) {
             val className = safeEvent.className?.toString().orEmpty()
             if (className.contains("MainActivity") || IronDisciplineApp.isMainActivityVisible) {
@@ -215,7 +229,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 currentForegroundPackage = pkgName
                 usageTrackerHelper.onForegroundPackageChanged(pkgName)
 
-                // If user navigated to Home Launcher, hide overlay
                 if (isHomeLauncherPackage(pkgName)) {
                     hideNativeBlockOverlay()
                     return
@@ -226,32 +239,33 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
             val nowMs = System.currentTimeMillis()
 
-            // INSTANT RE-OPEN INTERCEPTION (< 200ms):
-            // If user opens or interacts with YouTube, Facebook, Instagram, or TikTok while locked,
-            // show the Full-Screen Native Block Overlay immediately on top of the app!
-            if (CoreTargetApp.isCoreTargetPackage(pkgName)) {
-                if (realtimeQuotaManager.isCurrentlyLocked(nowMs)) {
-                    showOrUpdateNativeBlockOverlay(pkgName, nowMs)
+            // Instant Re-Open Interception (< 200ms) for independent core apps
+            val coreTarget = CoreTargetApp.fromPackageName(pkgName)
+            if (coreTarget != null) {
+                if (realtimeQuotaManager.isAppLocked(coreTarget.appKey, nowMs)) {
+                    showOrUpdateNativeBlockOverlay(coreTarget, nowMs)
+                    stopVideoAndSilenceAudio()
                     return
                 }
             }
         }
 
         serviceScope.launch(Dispatchers.Default) {
-            // 1. Strict Mode Settings Protection
+            // Strict Mode Settings Protection
             if (SETTINGS_AND_INSTALLER_PACKAGES.contains(pkgName)) {
                 if (repository.isStrictModeCurrentlyEnforced()) {
                     val tamperTarget = inspectSettingsForSelfSabotage(safeEvent)
                     if (tamperTarget != null) {
                         withContext(Dispatchers.Main) {
-                            showOrUpdateNativeBlockOverlay(pkgName, System.currentTimeMillis())
+                            showOrUpdateNonCoreBlockOverlay(tamperTarget, System.currentTimeMillis())
+                            stopVideoAndSilenceAudio()
                         }
                         return@launch
                     }
                 }
             }
 
-            // 2. Browser Social Media URL Interception
+            // Browser Social Media URL Interception
             if (SUPPORTED_BROWSER_PACKAGES.contains(pkgName)) {
                 val detectedUrl = extractBrowserUrlFromWindow()
                 if (!detectedUrl.isNullOrBlank()) {
@@ -259,7 +273,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     if (urlBlockResult.shouldBlock) {
                         repository.recordBlockedAttempt(urlBlockResult.targetKey)
                         withContext(Dispatchers.Main) {
-                            showOrUpdateNativeBlockOverlay(urlBlockResult.displayTitle, System.currentTimeMillis())
+                            showOrUpdateNonCoreBlockOverlay(urlBlockResult.displayTitle, System.currentTimeMillis())
+                            stopVideoAndSilenceAudio()
                         }
                         return@launch
                     }
@@ -269,10 +284,60 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Inspects interactive windows to find the top-most TYPE_APPLICATION window,
-     * ignoring TYPE_ACCESSIBILITY_OVERLAY (our own overlay), TYPE_INPUT_METHOD (keyboard),
-     * and TYPE_SYSTEM (notification shade / volume dialog).
+     * TRIPLE-LAYER VIDEO & AUDIO STOPPER (Zero Background Sound Leak)
+     * 1. Requests Exclusive Audio Focus (Forces video players to pause).
+     * 2. Dispatches Hardware Media Pause & Stop Key Events.
+     * 3. Mutes STREAM_MUSIC fail-safe while overlay is on screen.
      */
+    private fun stopVideoAndSilenceAudio() {
+        val am = audioManager ?: return
+        try {
+            // 1. Exclusive Audio Focus
+            if (audioFocusRequest == null) {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(audioAttributes)
+                    .setOnAudioFocusChangeListener { /* Handled */ }
+                    .build()
+            }
+            audioFocusRequest?.let { am.requestAudioFocus(it) }
+        } catch (_: Exception) {}
+
+        try {
+            // 2. Hardware Media Pause & Stop Key Events
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_STOP))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_STOP))
+        } catch (_: Exception) {}
+
+        try {
+            // 3. Mute STREAM_MUSIC while overlay is active
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+            isAudioMutedByUs = true
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Restores audio playback capabilities cleanly when leaving the blocked app.
+     */
+    private fun restoreAudioCleanly() {
+        val am = audioManager ?: return
+        try {
+            if (isAudioMutedByUs) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+                isAudioMutedByUs = false
+            }
+        } catch (_: Exception) {}
+
+        try {
+            audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+        } catch (_: Exception) {}
+    }
+
     private fun detectForegroundApplicationPackage(): String? {
         try {
             val windowList = windows
@@ -289,9 +354,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-        } catch (_: Exception) {
-            // Fallback to rootInActiveWindow below
-        }
+        } catch (_: Exception) {}
 
         return try {
             val activePkg = rootInActiveWindow?.packageName?.toString()
@@ -300,39 +363,37 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 !isTransientSystemOrKeyboardPackage(activePkg)
             ) {
                 activePkg
-            } else {
-                null
-            }
+            } else null
         } catch (_: Exception) {
             null
         }
     }
 
     /**
-     * Displays the crash-proof Native Full-Screen Block Overlay directly over the target app
-     * using TYPE_ACCESSIBILITY_OVERLAY (with fallback to TYPE_APPLICATION_OVERLAY).
-     * Does NOT close the app automatically; only exits to Home when the user clicks the button.
+     * Displays native full-screen Block Overlay specific to the locked app.
      */
     private fun showOrUpdateNativeBlockOverlay(
-        blockedPackageOrLabel: String,
+        coreTarget: CoreTargetApp,
         nowMs: Long = System.currentTimeMillis()
     ) {
+        val appName = coreTarget.displayName
+        currentLockedAppKey = coreTarget.appKey
+
         if (nowMs - lastInterceptVibrationMs > 1500L) {
             lastInterceptVibrationMs = nowMs
             vibrateWarningPulse()
         }
 
-        val appTitle = CoreTargetApp.fromPackageName(blockedPackageOrLabel)?.displayName
-            ?: usageTrackerHelper.resolveAppName(blockedPackageOrLabel)
-
         if (overlayRootView != null) {
-            blockedAppSubtitleTextView?.text = "Locked App: $appTitle"
-            updateOverlayLiveCountdownText(nowMs)
+            blockedAppHeaderTextView?.text = "🚫 $appName Block Ho Gaya Hai!"
+            blockedAppSubtitleTextView?.text = "Aap ka $appName ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
+            countdownLabelTextView?.text = "$appName unlock hone mein baqi waqt:"
+            updateOverlayLiveCountdownText(coreTarget.appKey, nowMs)
             return
         }
 
         val wm = windowManager ?: return
-        val view = buildNativeBlockOverlayView(appTitle, nowMs)
+        val view = buildNativeBlockOverlayView(appName, coreTarget.appKey, nowMs)
 
         val primaryLayoutParams = createOverlayLayoutParams(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -342,7 +403,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             wm.addView(view, primaryLayoutParams)
             overlayRootView = view
         } catch (_: Exception) {
-            // Fallback to TYPE_APPLICATION_OVERLAY if granted
             if (Settings.canDrawOverlays(this)) {
                 try {
                     val fallbackParams = createOverlayLayoutParams(
@@ -350,8 +410,33 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     )
                     wm.addView(view, fallbackParams)
                     overlayRootView = view
-                } catch (_: Exception) {
-                }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun showOrUpdateNonCoreBlockOverlay(title: String, nowMs: Long) {
+        currentLockedAppKey = null
+        if (overlayRootView != null) {
+            blockedAppHeaderTextView?.text = "🚫 $title Block Ho Gaya Hai!"
+            blockedAppSubtitleTextView?.text = "Yeh focus session ke dauran block hai."
+            countdownLabelTextView?.text = "Unlock hone mein baqi waqt:"
+            countdownTimerTextView?.text = "--:--:--"
+            return
+        }
+
+        val wm = windowManager ?: return
+        val view = buildNativeBlockOverlayView(title, null, nowMs)
+        val params = createOverlayLayoutParams(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        try {
+            wm.addView(view, params)
+            overlayRootView = view
+        } catch (_: Exception) {
+            if (Settings.canDrawOverlays(this)) {
+                try {
+                    wm.addView(view, createOverlayLayoutParams(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY))
+                    overlayRootView = view
+                } catch (_: Exception) {}
             }
         }
     }
@@ -371,23 +456,16 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Builds the exact required Full-Screen Native Overlay (#0D1117 background, #161B22 red warning card):
-     * - Header Icon & Title: "🚫 App Block Ho Gayi Hai!"
-     * - Message: "Aap ki app ka usage time pura ho chuka hai. Ab yeh app lock hai."
-     * - Live Unlock Countdown Box:
-     *   - Label: "Unlock hone mein baqi waqt:"
-     *   - Live Timer Text: HH:MM:SS
-     *   - Footer Note: "Meharbani farma kar unlock time pura hone ka wait karein."
-     * - Action Button: "Wapas Home Screen Par Jayein"
+     * Builds the required App-Specific Full-Screen Native Overlay (#0D1117 background, #161B22 red warning card).
      */
     private fun buildNativeBlockOverlayView(
-        blockedAppTitle: String,
+        appName: String,
+        appKey: String?,
         nowMs: Long
     ): FrameLayout {
         val rootFrame = object : FrameLayout(this) {
             override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
                 if (event?.keyCode == KeyEvent.KEYCODE_BACK) {
-                    // Consume hardware back press so user cannot dismiss the block screen via Back button
                     return true
                 }
                 return super.dispatchKeyEvent(event)
@@ -400,7 +478,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             setPadding(dp(24), dp(32), dp(24), dp(32))
         }
 
-        // Warning Card (#161B22 with Neon Red border)
         val cardContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -420,38 +497,28 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
         }
 
-        // 1. Header Icon & Title: "🚫 App Block Ho Gayi Hai!"
-        val headerTextView = TextView(this).apply {
-            text = "🚫 App Block Ho Gayi Hai!"
+        // 1. Header Title: "🚫 [AppName] Block Ho Gaya Hai!"
+        val headerTv = TextView(this).apply {
+            text = "🚫 $appName Block Ho Gaya Hai!"
             setTextColor(Color.parseColor("#FF2A54"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 23f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
         }
-        cardContainer.addView(headerTextView)
+        blockedAppHeaderTextView = headerTv
+        cardContainer.addView(headerTv)
 
-        // Target App Subtitle Pill
+        // 2. Subtitle: "Aap ka [AppName] ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
         val subtitleTv = TextView(this).apply {
-            text = "Locked App: $blockedAppTitle"
-            setTextColor(Color.parseColor("#00F5D4"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            text = "Aap ka $appName ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
+            setTextColor(Color.parseColor("#F0F6FC"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             gravity = Gravity.CENTER
-            setPadding(0, dp(6), 0, dp(12))
+            setLineSpacing(dp(4).toFloat(), 1.0f)
+            setPadding(dp(8), dp(10), dp(8), dp(20))
         }
         blockedAppSubtitleTextView = subtitleTv
         cardContainer.addView(subtitleTv)
-
-        // 2. Message: "Aap ki app ka usage time pura ho chuka hai. Ab yeh app lock hai."
-        val messageTextView = TextView(this).apply {
-            text = "Aap ki app ka usage time pura ho chuka hai. Ab yeh app lock hai."
-            setTextColor(Color.parseColor("#F0F6FC"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            gravity = Gravity.CENTER
-            setLineSpacing(dp(4).toFloat(), 1.0f)
-            setPadding(dp(8), 0, dp(8), dp(22))
-        }
-        cardContainer.addView(messageTextView)
 
         // 3. Live Unlock Countdown Box
         val countdownBox = LinearLayout(this).apply {
@@ -472,26 +539,23 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             bottomMargin = dp(24)
         }
 
-        val countdownLabelTv = TextView(this).apply {
-            text = "Unlock hone mein baqi waqt:"
+        val labelTv = TextView(this).apply {
+            text = "$appName unlock hone mein baqi waqt:"
             setTextColor(Color.parseColor("#8B949E"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
         }
-        countdownBox.addView(countdownLabelTv)
+        countdownLabelTextView = labelTv
+        countdownBox.addView(labelTv)
 
-        val lockedUntilMs = realtimeQuotaManager.getLockedUntilEpochMs()
-        val initialRemainingMs = if (lockedUntilMs > nowMs) {
-            lockedUntilMs - nowMs
-        } else {
-            RealtimeQuotaManager.TEST_MODE_LOCK_DURATION_MS
-        }
+        val lockedUntilMs = if (appKey != null) realtimeQuotaManager.getLockedUntilEpochMs(appKey) else 0L
+        val initialRemainingMs = if (lockedUntilMs > nowMs) lockedUntilMs - nowMs else RealtimeQuotaManager.TEST_MODE_LOCK_DURATION_MS
 
         val timerTv = TextView(this).apply {
             text = RealtimeQuotaManager.formatMillisToHhMmSs(initialRemainingMs)
             setTextColor(Color.parseColor("#FFBE0B"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 38f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, dp(10))
@@ -528,19 +592,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 hideNativeBlockOverlay()
             }
         }
-        val buttonParams = LinearLayout.LayoutParams(
+        cardContainer.addView(exitHomeButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        cardContainer.addView(exitHomeButton, buttonParams)
+        ))
 
         rootFrame.addView(cardContainer, cardParams)
         return rootFrame
     }
 
-    private fun updateOverlayLiveCountdownText(nowMs: Long = System.currentTimeMillis()) {
+    private fun updateOverlayLiveCountdownText(appKey: String, nowMs: Long = System.currentTimeMillis()) {
         val tv = countdownTimerTextView ?: return
-        val lockedUntilMs = realtimeQuotaManager.getLockedUntilEpochMs()
+        val lockedUntilMs = realtimeQuotaManager.getLockedUntilEpochMs(appKey)
         val remainingMs = (lockedUntilMs - nowMs).coerceAtLeast(0L)
         tv.text = RealtimeQuotaManager.formatMillisToHhMmSs(remainingMs)
     }
@@ -548,12 +611,17 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     fun hideNativeBlockOverlay() {
         val view = overlayRootView ?: return
         overlayRootView = null
-        countdownTimerTextView = null
+        currentLockedAppKey = null
+        blockedAppHeaderTextView = null
         blockedAppSubtitleTextView = null
+        countdownLabelTextView = null
+        countdownTimerTextView = null
+
+        restoreAudioCleanly()
+
         try {
             windowManager?.removeViewImmediate(view)
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private fun dp(value: Int): Int {
@@ -587,12 +655,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             return "System Permission / Security Settings"
         }
 
-        val rootNode = try {
-            rootInActiveWindow
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
+        val rootNode = try { rootInActiveWindow } catch (_: Exception) { null } ?: return null
         val scrapedTexts = mutableListOf<String>()
         collectVisibleTexts(rootNode, scrapedTexts, maxNodes = 80)
         val fullWindowContent = scrapedTexts.joinToString(" | ").lowercase()
@@ -617,11 +680,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun collectVisibleTexts(
-        node: AccessibilityNodeInfo?,
-        outList: MutableList<String>,
-        maxNodes: Int
-    ) {
+    private fun collectVisibleTexts(node: AccessibilityNodeInfo?, outList: MutableList<String>, maxNodes: Int) {
         if (node == null || outList.size >= maxNodes) return
         node.text?.toString()?.takeIf { it.isNotBlank() }?.let { outList.add(it) }
         node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let { outList.add(it) }
@@ -629,11 +688,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         val childCount = node.childCount
         for (i in 0 until childCount) {
             if (outList.size >= maxNodes) break
-            val child = try {
-                node.getChild(i)
-            } catch (_: Exception) {
-                null
-            }
+            val child = try { node.getChild(i) } catch (_: Exception) { null }
             if (child != null) {
                 collectVisibleTexts(child, outList, maxNodes)
             }
@@ -641,28 +696,16 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun extractBrowserUrlFromWindow(): String? {
-        val rootNode = try {
-            rootInActiveWindow
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
+        val rootNode = try { rootInActiveWindow } catch (_: Exception) { null } ?: return null
         for (viewId in BROWSER_URL_BAR_VIEW_IDS) {
-            val matchingNodes = try {
-                rootNode.findAccessibilityNodeInfosByViewId(viewId)
-            } catch (_: Exception) {
-                null
-            }
+            val matchingNodes = try { rootNode.findAccessibilityNodeInfosByViewId(viewId) } catch (_: Exception) { null }
             if (!matchingNodes.isNullOrEmpty()) {
                 for (node in matchingNodes) {
                     val text = node.text?.toString()?.trim()
-                    if (!text.isNullOrBlank()) {
-                        return text
-                    }
+                    if (!text.isNullOrBlank()) return text
                 }
             }
         }
-
         return findUrlNodeRecursively(rootNode, depth = 0)
     }
 
@@ -681,11 +724,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         val childCount = node.childCount
         for (i in 0 until childCount) {
-            val child = try {
-                node.getChild(i)
-            } catch (_: Exception) {
-                null
-            }
+            val child = try { node.getChild(i) } catch (_: Exception) { null }
             val found = findUrlNodeRecursively(child, depth + 1)
             if (!found.isNullOrBlank()) return found
         }
@@ -704,8 +743,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             vibrator?.vibrate(
                 VibrationEffect.createWaveform(longArrayOf(0L, 90L, 60L, 140L), -1)
             )
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private fun isHomeLauncherPackage(pkgName: String): Boolean {

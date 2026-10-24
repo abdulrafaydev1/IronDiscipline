@@ -213,7 +213,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.unlockAndResetTimerForTesting()
             AppBlockerAccessibilityService.dismissOverlayIfShowing()
-            postBannerMessage("Unlocked & Reset Timer (used_seconds_today = 0, is_locked_until_epoch_ms = 0).")
+            postBannerMessage("Unlocked & Reset All Timers (YouTube, FB, IG, TikTok).")
+        }
+    }
+
+    fun setAppLimitMinutes(appKey: String, limitMinutes: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.setAppLimitMinutes(appKey, limitMinutes)
+            AppBlockerAccessibilityService.dismissOverlayIfShowing()
+            postBannerMessage("Updated limit for $appKey to ${limitMinutes}m.")
+        }
+    }
+
+    fun resetSingleApp(appKey: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.resetSingleApp(appKey)
+            AppBlockerAccessibilityService.dismissOverlayIfShowing()
+            postBannerMessage("Reset timer and unlocked $appKey.")
         }
     }
 

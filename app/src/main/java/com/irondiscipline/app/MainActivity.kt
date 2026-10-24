@@ -290,6 +290,8 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                     onActivateOneMinuteTestMode = viewModel::activateOneMinuteTestMode,
                     onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
                     onUnlockAndResetTimerForTesting = viewModel::unlockAndResetTimerForTesting,
+                    onSetAppLimitMinutes = viewModel::setAppLimitMinutes,
+                    onResetSingleApp = viewModel::resetSingleApp,
                     onActivateStrictMode = viewModel::activateStrictMode,
                     onUpdateMotivationalQuote = viewModel::updateMotivationalQuote,
                     onSelectTimerPreset = viewModel::setDeepWorkPresetMinutes,
