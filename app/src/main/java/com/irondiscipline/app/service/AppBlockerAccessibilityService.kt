@@ -23,6 +23,7 @@ import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -50,13 +51,22 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private var countdownTimerTextView: TextView? = null
 
     @Volatile
-    private var currentActivePackage: String = ""
+    private var lastDetectedPackage: String = ""
+
+    @Volatile
+    private var currentTargetAppKey: String? = null
+
+    @Volatile
+    private var lastTargetSeenTimestamp: Long = 0L
 
     @Volatile
     private var currentLockedAppKey: String? = null
 
     @Volatile
     private var lastInterceptVibrationMs: Long = 0L
+
+    // Live On-Screen Floating Timer Pill
+    private var floatingPillView: TextView? = null
 
     // Single Deterministic 1-Second Handler Loop (Zero Race Conditions)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -93,6 +103,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickerRunnable)
+        hideFloatingTimerPill()
         hideNativeBlockOverlay()
         if (instance === this) {
             instance = null
@@ -101,26 +112,48 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Sticky Foreground App Detection:
-     * Only reacts to TYPE_WINDOW_STATE_CHANGED and ignores transient overlays, keyboards, and volume panels.
+     * Flexible Package Matcher: Catches all regional, full, and lite variants.
+     */
+    private fun resolveTargetAppKey(pkg: String?): String? {
+        if (pkg.isNullOrBlank()) return null
+        val p = pkg.lowercase().trim()
+        return when {
+            p == "com.google.android.youtube" || p.contains("youtube") -> "youtube"
+            p == "com.facebook.katana" || p == "com.facebook.lite" || p == "com.facebook.wakizashi" || (p.startsWith("com.facebook.") && !p.contains("orca")) -> "facebook"
+            p == "com.instagram.android" || p == "com.instagram.lite" || p.contains("instagram") -> "instagram"
+            p.contains("musically") || p.contains("ugc.trill") || p.contains("tiktok") -> "tiktok"
+            else -> null
+        }
+    }
+
+    /**
+     * Filters out transient system UI, volume panels, and virtual keyboards so focus is never lost.
+     */
+    private fun isIgnoredSystemPackage(pkg: String?): Boolean {
+        if (pkg.isNullOrBlank()) return true
+        val p = pkg.lowercase().trim()
+        if (p == packageName.lowercase()) return false // Our own app is a real app when opened
+        return p == "android" ||
+            p.contains("systemui") ||
+            p.contains("inputmethod") ||
+            p.contains("keyboard") ||
+            p.contains("honeyboard") ||
+            p.contains("gboard") ||
+            p.contains("swiftkey") ||
+            p.contains("volume") ||
+            p.contains("miui.securitycenter") ||
+            p.contains("coloros.safecenter") ||
+            p.contains("samsung.android.app.cocktailbarservice") ||
+            p.contains("permissioncontroller") ||
+            (overlayRootView != null && p == packageName.lowercase())
+    }
+
+    /**
+     * Instant Event Interception:
+     * Captures TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_SCROLLED, etc.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val safeEvent = event ?: return
-
-        // 1. Only process TYPE_WINDOW_STATE_CHANGED for full-screen app transitions
-        if (safeEvent.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            return
-        }
-
-        val rawPkg = safeEvent.packageName?.toString()
-            ?: try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
-            ?: return
-
-        // 2. Ignore transient system/keyboard/volume packages
-        if (isIgnoredTransientPackage(rawPkg)) {
-            return
-        }
-
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         // 0. Emergency / Authorized App Uninstall: stand down protection and disable service
@@ -129,61 +162,206 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 3. Anti-Cheat: Block Calculator if wake-up alarm is ringing
-        if (prefs.getBoolean("is_alarm_currently_ringing", false)) {
-            if (CALCULATOR_PACKAGES.contains(rawPkg) || rawPkg.contains("calc", ignoreCase = true)) {
-                showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)")
-                return
-            }
-        }
+        val eventPkg = safeEvent.packageName?.toString()
+            ?: try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
 
-        // 4. Anti-Tamper: Block Settings if ANY target app has an active 5-hour lock
-        if (isAnyCoreAppLocked(prefs)) {
-            if (SETTINGS_AND_INSTALLER_PACKAGES.contains(rawPkg) || rawPkg == "com.android.settings") {
-                if (inspectSettingsForFiveHourTamper(safeEvent)) {
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                    showOrUpdateNonCoreBlockOverlay(
-                        "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked."
-                    )
-                    stopVideoAndSilenceAudio()
+        if (!isIgnoredSystemPackage(eventPkg)) {
+            val validPkg = eventPkg!!
+            lastDetectedPackage = validPkg
+
+            // Anti-Cheat: Block Calculator if wake-up alarm is ringing
+            if (prefs.getBoolean("is_alarm_currently_ringing", false)) {
+                if (CALCULATOR_PACKAGES.contains(validPkg) || validPkg.contains("calc", ignoreCase = true)) {
+                    showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)")
                     return
                 }
             }
+
+            // Anti-Tamper: Block Settings if ANY target app has an active 5-hour lock
+            if (isAnyCoreAppLocked(prefs)) {
+                if (SETTINGS_AND_INSTALLER_PACKAGES.contains(validPkg) || validPkg == "com.android.settings") {
+                    if (inspectSettingsForFiveHourTamper(safeEvent)) {
+                        performGlobalAction(GLOBAL_ACTION_HOME)
+                        showOrUpdateNonCoreBlockOverlay(
+                            "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked."
+                        )
+                        stopVideoAndSilenceAudio()
+                        return
+                    }
+                }
+            }
+
+            // If user opened IronDiscipline MainActivity or Home Launcher, clear current target
+            if (validPkg == packageName || isHomeLauncherPackage(validPkg) || IronDisciplineApp.isMainActivityVisible) {
+                currentTargetAppKey = null
+                hideFloatingTimerPill()
+                if (overlayRootView != null) {
+                    hideNativeBlockOverlay()
+                }
+                realtimeQuotaManager.publishSnapshot()
+                return
+            }
+
+            val matchedKey = resolveTargetAppKey(validPkg)
+            if (matchedKey != null) {
+                currentTargetAppKey = matchedKey
+                lastTargetSeenTimestamp = System.currentTimeMillis()
+
+                val lockRem = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0)
+                val isTestMode = prefs.getBoolean("is_test_mode", false) || prefs.getBoolean("is_one_minute_test_mode", false)
+                val limitSec = if (isTestMode) 60 else 1800
+                val usedSec = prefs.getInt(PREFIX_USED_SEC + matchedKey, 0)
+
+                if (lockRem > 0 || usedSec >= limitSec) {
+                    hideFloatingTimerPill()
+                    showBlockOverlay(matchedKey)
+                    stopVideoAndSilenceAudio()
+                }
+            } else if (safeEvent.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                currentTargetAppKey = null
+                hideFloatingTimerPill()
+                if (overlayRootView != null) {
+                    hideNativeBlockOverlay()
+                }
+            }
+        }
+    }
+
+    /**
+     * Active Window Polling (Works even when watching videos with screen untouched).
+     */
+    private fun detectCurrentTargetAppKey(): String? {
+        if (IronDisciplineApp.isMainActivityVisible) {
+            currentTargetAppKey = null
+            return null
         }
 
-        // 5. If user opened IronDiscipline MainActivity (Dashboard), hide overlay
-        if (rawPkg == packageName) {
-            val className = safeEvent.className?.toString().orEmpty()
-            if (className.contains("MainActivity") || IronDisciplineApp.isMainActivityVisible) {
-                currentActivePackage = packageName
-                hideNativeBlockOverlay()
+        // 1. Check interactive application windows on screen first
+        try {
+            val windowList = windows
+            if (!windowList.isNullOrEmpty()) {
+                for (window in windowList) {
+                    if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        val winPkg = window.root?.packageName?.toString()
+                        if (!isIgnoredSystemPackage(winPkg)) {
+                            if (winPkg == packageName || isHomeLauncherPackage(winPkg.orEmpty())) {
+                                currentTargetAppKey = null
+                                return null
+                            }
+                            val key = resolveTargetAppKey(winPkg)
+                            if (key != null) {
+                                currentTargetAppKey = key
+                                lastTargetSeenTimestamp = System.currentTimeMillis()
+                                return key
+                            }
+                        }
+                    }
+                }
             }
+        } catch (_: Exception) {}
+
+        // 2. Check rootInActiveWindow
+        try {
+            val rootPkg = rootInActiveWindow?.packageName?.toString()
+            if (!isIgnoredSystemPackage(rootPkg)) {
+                if (rootPkg == packageName || isHomeLauncherPackage(rootPkg.orEmpty())) {
+                    currentTargetAppKey = null
+                    return null
+                }
+                val key = resolveTargetAppKey(rootPkg)
+                if (key != null) {
+                    currentTargetAppKey = key
+                    lastTargetSeenTimestamp = System.currentTimeMillis()
+                    return key
+                } else {
+                    currentTargetAppKey = null
+                    return null
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 3. Fallback to sticky currentTargetAppKey if recently seen within last 2.5s
+        val now = System.currentTimeMillis()
+        if (currentTargetAppKey != null && now - lastTargetSeenTimestamp < 2500L) {
+            return currentTargetAppKey
+        }
+
+        return currentTargetAppKey
+    }
+
+    /**
+     * Live On-Screen Floating Timer Pill:
+     * Non-intrusive floating indicator in top-right corner.
+     * Shows visual proof of live countdown inside target apps.
+     */
+    private fun showOrUpdateFloatingTimerPill(appKey: String, remainingSec: Int) {
+        val wm = windowManager ?: return
+
+        val appTag = when (appKey) {
+            "youtube" -> "YT"
+            "facebook" -> "FB"
+            "instagram" -> "IG"
+            "tiktok" -> "TT"
+            else -> appKey.take(2).uppercase()
+        }
+        val mmSs = RealtimeQuotaManager.formatSecondsToMmSs(remainingSec)
+        val pillText = "⏱️ $appTag • $mmSs"
+
+        if (floatingPillView != null) {
+            floatingPillView?.text = pillText
             return
         }
 
-        // 6. If user navigated to Home Launcher, hide overlay cleanly
-        if (isHomeLauncherPackage(rawPkg)) {
-            currentActivePackage = rawPkg
-            hideNativeBlockOverlay()
-            return
-        }
-
-        // 7. Update sticky active package
-        currentActivePackage = rawPkg
-
-        // Instant Check for Target Apps (< 100ms response)
-        val activeAppKey = mapPackageToCoreAppKey(rawPkg)
-        if (activeAppKey != null) {
-            val remainingLockSec = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + activeAppKey, 0)
-            val usedSec = prefs.getInt(PREFIX_USED_SEC + activeAppKey, 0)
-            val isTestMode = prefs.getBoolean("is_test_mode", false) || prefs.getBoolean("is_one_minute_test_mode", false)
-            val limitSec = if (isTestMode) 60 else 1800
-
-            if (remainingLockSec > 0 || usedSec >= limitSec) {
-                showBlockOverlay(activeAppKey)
-                stopVideoAndSilenceAudio()
+        val pillTv = TextView(this).apply {
+            text = pillText
+            setTextColor(Color.parseColor("#00E676"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.parseColor("#E60D121D")) // 90% obsidian slate
+                setStroke(dp(1), Color.parseColor("#00E676"))
             }
         }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(12)
+            y = dp(52)
+        }
+
+        try {
+            wm.addView(pillTv, params)
+            floatingPillView = pillTv
+        } catch (_: Exception) {
+            if (Settings.canDrawOverlays(this)) {
+                try {
+                    params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    wm.addView(pillTv, params)
+                    floatingPillView = pillTv
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun hideFloatingTimerPill() {
+        val pill = floatingPillView ?: return
+        floatingPillView = null
+        try {
+            windowManager?.removeViewImmediate(pill)
+        } catch (_: Exception) {}
     }
 
     /**
@@ -199,7 +377,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Date rollover check for unlocked apps
+        // Midnight rollover check for unlocked apps
         checkMidnightDateRollover(prefs)
 
         // Step A — Decrement Active 5-Hour Locks First:
@@ -213,18 +391,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                         .putInt(PREFIX_REMAINING_LOCK_SEC + appKey, 0)
                         .putLong(PREFIX_LOCKED_UNTIL + appKey, 0L)
                         .putInt(PREFIX_USED_SEC + appKey, 0) // fresh quota granted
-                        .apply()
+                        .commit()
                 } else {
                     prefs.edit()
                         .putInt(PREFIX_REMAINING_LOCK_SEC + appKey, nextLockRem)
-                        .apply()
+                        .commit()
                 }
             }
         }
 
         // Anti-Tamper check if Settings is open while ANY app is locked
-        if (isAnyCoreAppLocked(prefs) && currentActivePackage.isNotBlank()) {
-            if (SETTINGS_AND_INSTALLER_PACKAGES.contains(currentActivePackage) || currentActivePackage == "com.android.settings") {
+        if (isAnyCoreAppLocked(prefs) && lastDetectedPackage.isNotBlank()) {
+            if (SETTINGS_AND_INSTALLER_PACKAGES.contains(lastDetectedPackage) || lastDetectedPackage == "com.android.settings") {
                 if (inspectSettingsForFiveHourTamper(null)) {
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     showOrUpdateNonCoreBlockOverlay(
@@ -237,15 +415,16 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // Calculator Anti-Cheat check while alarm is ringing
-        if (prefs.getBoolean("is_alarm_currently_ringing", false) && currentActivePackage.isNotBlank()) {
-            if (CALCULATOR_PACKAGES.contains(currentActivePackage) || currentActivePackage.contains("calc", ignoreCase = true)) {
+        if (prefs.getBoolean("is_alarm_currently_ringing", false) && lastDetectedPackage.isNotBlank()) {
+            if (CALCULATOR_PACKAGES.contains(lastDetectedPackage) || lastDetectedPackage.contains("calc", ignoreCase = true)) {
                 showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)")
                 return
             }
         }
 
-        // If inside Dashboard or Home Launcher, ensure overlay is hidden
-        if (currentActivePackage == packageName || isHomeLauncherPackage(currentActivePackage) || IronDisciplineApp.isMainActivityVisible) {
+        // If inside Dashboard or Home Launcher, ensure overlay and pill are hidden
+        if (IronDisciplineApp.isMainActivityVisible || lastDetectedPackage == packageName || isHomeLauncherPackage(lastDetectedPackage)) {
+            hideFloatingTimerPill()
             if (overlayRootView != null) {
                 hideNativeBlockOverlay()
             }
@@ -253,38 +432,47 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Step B — Increment Active Foreground App Usage Strictly by +1 Second:
-        val activeAppKey = mapPackageToCoreAppKey(currentActivePackage)
-        if (activeAppKey != null) {
-            val lockRem = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + activeAppKey, 0)
+        // Step B — Active App Detection & 1-Second Synchronous Ticking:
+        val activeKey = detectCurrentTargetAppKey()
+        if (activeKey != null) {
+            val lockRem = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + activeKey, 0)
             val isTestMode = prefs.getBoolean("is_test_mode", false) || prefs.getBoolean("is_one_minute_test_mode", false)
             val limitSeconds = if (isTestMode) 60 else 1800
 
             if (lockRem > 0) {
-                // App is locked for 5 hours: show block overlay and mute media
-                showBlockOverlay(activeAppKey)
+                // App is locked for 5 hours: hide mini pill, show block overlay, silence audio
+                hideFloatingTimerPill()
+                showBlockOverlay(activeKey)
                 stopVideoAndSilenceAudio()
             } else {
-                // App is unlocked: strictly monotonic increment by +1 second
-                val currentUsed = prefs.getInt(PREFIX_USED_SEC + activeAppKey, 0)
-                val newUsed = currentUsed + 1
-                prefs.edit().putInt(PREFIX_USED_SEC + activeAppKey, newUsed).apply()
+                // App is unlocked: synchronously increment used seconds by +1
+                val used = prefs.getInt(PREFIX_USED_SEC + activeKey, 0) + 1
+                prefs.edit().putInt(PREFIX_USED_SEC + activeKey, used).commit()
 
-                if (newUsed >= limitSeconds) {
+                val remainingSec = (limitSeconds - used).coerceAtLeast(0)
+
+                if (used >= limitSeconds) {
                     // Reached limit: trigger 5-hour lock immediately
                     val lockEndMs = System.currentTimeMillis() + FIVE_HOURS_MS
                     prefs.edit()
-                        .putInt(PREFIX_REMAINING_LOCK_SEC + activeAppKey, FIVE_HOURS_SECONDS)
-                        .putLong(PREFIX_LOCKED_UNTIL + activeAppKey, lockEndMs)
-                        .apply()
-                    showBlockOverlay(activeAppKey)
+                        .putInt(PREFIX_REMAINING_LOCK_SEC + activeKey, FIVE_HOURS_SECONDS)
+                        .putLong(PREFIX_LOCKED_UNTIL + activeKey, lockEndMs)
+                        .commit()
+                    hideFloatingTimerPill()
+                    showBlockOverlay(activeKey)
                     stopVideoAndSilenceAudio()
-                } else if (overlayRootView != null && currentLockedAppKey == activeAppKey) {
-                    hideNativeBlockOverlay()
+                } else {
+                    // Show or update top-right Live Floating Timer Pill
+                    showOrUpdateFloatingTimerPill(activeKey, remainingSec)
+
+                    if (overlayRootView != null && currentLockedAppKey == activeKey) {
+                        hideNativeBlockOverlay()
+                    }
                 }
             }
         } else {
             // User switched to an unblocked application (e.g. WhatsApp, Maps)
+            hideFloatingTimerPill()
             if (overlayRootView != null && currentLockedAppKey != null) {
                 hideNativeBlockOverlay()
             }
@@ -319,7 +507,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
                 }
             }
-            editor.apply()
+            editor.commit()
         }
     }
 
@@ -332,32 +520,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             val usedSec = prefs.getInt(PREFIX_USED_SEC + key, 0)
             lockRem > 0 || usedSec >= limitSec
         }
-    }
-
-    private fun mapPackageToCoreAppKey(packageName: String?): String? {
-        if (packageName.isNullOrBlank()) return null
-        val lower = packageName.lowercase().trim()
-        return when {
-            lower == "com.google.android.youtube" -> "youtube"
-            lower == "com.facebook.katana" -> "facebook"
-            lower == "com.instagram.android" -> "instagram"
-            lower == "com.zhiliaoapp.musically" ||
-                lower == "com.ss.android.ugc.trill" ||
-                lower == "com.zhiliaoapp.musically.go" -> "tiktok"
-            else -> null
-        }
-    }
-
-    private fun isIgnoredTransientPackage(pkg: String): Boolean {
-        val lower = pkg.lowercase().trim()
-        return lower == "com.android.systemui" ||
-            lower.contains("inputmethod") ||
-            lower.contains("keyboard") ||
-            lower.contains("honeyboard") ||
-            lower.contains("gboard") ||
-            lower.contains("permissioncontroller") ||
-            lower.contains("volume") ||
-            (overlayRootView != null && lower == packageName.lowercase())
     }
 
     /**
@@ -410,6 +572,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     fun showBlockOverlay(appKey: String) {
+        hideFloatingTimerPill()
         val appName = when (appKey) {
             "youtube" -> "YouTube"
             "facebook" -> "Facebook"
@@ -421,6 +584,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun showOrUpdateNativeBlockOverlay(appName: String, appKey: String) {
+        hideFloatingTimerPill()
         currentLockedAppKey = appKey
         val nowMs = System.currentTimeMillis()
 
@@ -459,6 +623,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun showOrUpdateNonCoreBlockOverlay(title: String) {
+        hideFloatingTimerPill()
         currentLockedAppKey = null
         val nowMs = System.currentTimeMillis()
         if (overlayRootView != null) {
@@ -734,6 +899,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
      * Cleans up all overlays, audio muting, ticker callbacks, and shuts down the AccessibilityService.
      */
     fun disarmAndDisable() {
+        hideFloatingTimerPill()
         hideNativeBlockOverlay()
         restoreAudioCleanly()
         mainHandler.removeCallbacks(tickerRunnable)
@@ -842,6 +1008,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         fun dismissOverlayIfShowing() {
             val service = instance ?: return
             Handler(Looper.getMainLooper()).post {
+                service.hideFloatingTimerPill()
                 service.hideNativeBlockOverlay()
             }
         }

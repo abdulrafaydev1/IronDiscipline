@@ -80,6 +80,9 @@ data class CoreAppQuotaStatus(
     val formattedRemainingMmSs: String
         get() = RealtimeQuotaManager.formatSecondsToMmSs(remainingSeconds)
 
+    val formattedUsedMmSs: String
+        get() = RealtimeQuotaManager.formatSecondsToMmSs(usedSeconds)
+
     val formattedLimitMinutes: String
         get() = "${limitSeconds / 60}m"
 

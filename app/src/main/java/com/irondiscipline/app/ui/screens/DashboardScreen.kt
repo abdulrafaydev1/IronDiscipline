@@ -876,9 +876,9 @@ private fun PremiumAppDisciplineCard(
                     )
                     Spacer(modifier = Modifier.height(3.dp))
                     Text(
-                        text = if (isLocked) "00:00" else status.formattedRemainingMmSs,
-                        color = if (isLocked) ColorCrimsonNeon else ColorTextPrimary,
-                        fontSize = 28.sp,
+                        text = if (isLocked) "00:00 left" else "${status.formattedRemainingMmSs} left",
+                        color = if (isLocked) ColorCrimsonNeon else ColorElectricEmerald,
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 1.0.sp
@@ -889,7 +889,7 @@ private fun PremiumAppDisciplineCard(
                 Column(horizontalAlignment = Alignment.End) {
                     if (isLocked) {
                         Text(
-                            text = "UNLOCKS IN",
+                            text = "5-HR PENALTY",
                             color = ColorCrimsonNeon,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Black,
@@ -905,9 +905,18 @@ private fun PremiumAppDisciplineCard(
                         )
                     } else {
                         Text(
-                            text = "${status.usedSeconds}s used",
-                            color = ColorTextMuted,
-                            fontSize = 12.sp,
+                            text = "TIME USED TODAY",
+                            color = ColorTextSecondary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.0.sp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "${status.formattedUsedMmSs} used",
+                            color = ColorCyberAmber,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                     }
