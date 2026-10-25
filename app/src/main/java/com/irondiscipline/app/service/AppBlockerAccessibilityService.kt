@@ -33,11 +33,15 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import com.irondiscipline.app.IronDisciplineApp
+import com.irondiscipline.app.alarm.ActiveAlarmSessionState
 import com.irondiscipline.app.alarm.AlarmReceiver
 import com.irondiscipline.app.alarm.AlarmRepository
+import com.irondiscipline.app.alarm.AlarmRingingActivity
 import com.irondiscipline.app.alarm.AlarmRingingService
 import com.irondiscipline.app.alarm.AlarmScheduler
+import com.irondiscipline.app.alarm.AlarmWakeLockManager
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.RealtimeQuotaManager
 import java.time.LocalDate
@@ -400,19 +404,23 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     /**
      * Fail-Safe Backup Alarm Watchdog (Dual-Engine Protection):
      * Runs every second in the persistent Accessibility Service.
-     * If Android AlarmManager or Doze mode delays the alarm by even 2-3 seconds,
-     * this watchdog detects that an active alarm's triggerAtMillis has arrived,
-     * and immediately fires the alarm broadcast to wake the device.
+     * Keeps CPU ticking via maintainPendingAlarmCpuLock so 1s timer never freezes during screen-off sleep.
+     * If trigger time arrives, instantly wakes screen, starts foreground ringing service, and launches UI.
      */
     private fun checkBackupAlarmWatchdog() {
         try {
+            val alarms = AlarmRepository.getInstance(applicationContext).alarmsFlow.value
+            val hasEnabledAlarms = alarms.any { it.isEnabled }
+
+            // Hold CPU PARTIAL_WAKE_LOCK so the 1-second loop NEVER freezes during screen-off sleep!
+            AlarmWakeLockManager.maintainPendingAlarmCpuLock(this, hasEnabledAlarms)
+
             val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (AlarmRingingService.isCurrentlyRinging || prefs.getBoolean("is_alarm_currently_ringing", false)) {
                 return
             }
 
             val now = System.currentTimeMillis()
-            val alarms = AlarmRepository.getInstance(applicationContext).alarmsFlow.value
 
             for (alarm in alarms) {
                 if (!alarm.isEnabled) continue
@@ -429,17 +437,40 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                         prefs.edit().putLong(lastTriggeredKey, now).commit()
                         Log.i("AlarmDiag", "[WATCHDOG] Backup watchdog triggering alarm ID=${alarm.id}, drift=${now - triggerAt}ms")
 
-                        val triggerIntent = Intent(applicationContext, AlarmReceiver::class.java).apply {
-                            action = "${packageName}.ACTION_ALARM_TRIGGER"
-                            data = Uri.parse("ironalarm://trigger/${alarm.id}")
+                        // 1. Physically turn the screen ON from sleep!
+                        AlarmWakeLockManager.acquireRingingWakeLocks(this)
+
+                        // 2. Initialize persistent session state
+                        ActiveAlarmSessionState.initSession(alarm.id)
+
+                        // 3. Immediately start AlarmRingingService in foreground
+                        val serviceIntent = Intent(applicationContext, AlarmRingingService::class.java).apply {
                             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
                             putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm.label)
                             putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm.soundIndex)
                             putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
                             putExtra("EXTRA_IS_NEW_TRIGGER", true)
-                            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                         }
-                        sendBroadcast(triggerIntent)
+                        ContextCompat.startForegroundService(applicationContext, serviceIntent)
+
+                        // 4. Launch AlarmRingingActivity directly (AccessibilityService has unrestricted background launch permission)
+                        val activityIntent = Intent(applicationContext, AlarmRingingActivity::class.java).apply {
+                            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
+                            putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm.label)
+                            putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm.soundIndex)
+                            putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+                            putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            )
+                        }
+                        try {
+                            startActivity(activityIntent)
+                        } catch (e: Exception) {
+                            Log.e("AlarmDiag", "[WATCHDOG] Error starting AlarmRingingActivity: ${e.message}")
+                        }
                     }
                 }
             }

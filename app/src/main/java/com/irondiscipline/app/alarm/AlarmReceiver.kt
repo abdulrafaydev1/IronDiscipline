@@ -35,12 +35,22 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         // 2. First line for alarm triggers: Acquire CPU & Screen WakeLocks immediately
-        AlarmWakeLockManager.acquireWakeLocks(context)
+        AlarmWakeLockManager.acquireRingingWakeLocks(context)
 
-        val alarmId = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID) ?: return
+        val alarmId = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+            ?: safeIntent.getStringExtra("EXTRA_ALARM_ID") ?: return
         val alarmLabel = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
-        val soundIndex = safeIntent.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0)
-        val deleteAfter = safeIntent.getBooleanExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, false)
+            ?: safeIntent.getStringExtra("EXTRA_ALARM_LABEL")
+        val soundIndex = if (safeIntent.hasExtra(AlarmScheduler.EXTRA_SOUND_INDEX)) {
+            safeIntent.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0)
+        } else {
+            safeIntent.getIntExtra("EXTRA_SOUND_INDEX", 0)
+        }
+        val deleteAfter = if (safeIntent.hasExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING)) {
+            safeIntent.getBooleanExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, false)
+        } else {
+            safeIntent.getBooleanExtra("EXTRA_DELETE_AFTER_RINGING", false)
+        }
 
         Log.i(
             "AlarmDiag",
@@ -59,7 +69,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 AlarmRingingService.stopAndCleanup(context, alarmId)
             }
 
-            AlarmScheduler.ACTION_TRIGGER_ALARM, "${context.packageName}.ACTION_ALARM_TRIGGER", "com.irondiscipline.app.alarm.TRIGGER_ALARM", null -> {
+            else -> {
                 // Record timestamp to avoid duplicate triggers within 60s from watchdog
                 val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
                 prefs.edit().putLong("last_triggered_timestamp_$alarmId", System.currentTimeMillis()).commit()
@@ -76,6 +86,25 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra("EXTRA_IS_NEW_TRIGGER", true)
                 }
                 ContextCompat.startForegroundService(context, serviceIntent)
+
+                // Also launch AlarmRingingActivity directly over lock screen
+                val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
+                    putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                    putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
+                    putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    )
+                }
+                try {
+                    context.startActivity(activityIntent)
+                } catch (e: Exception) {
+                    Log.e("AlarmDiag", "[RECEIVER] Failed to launch AlarmRingingActivity directly: ${e.message}")
+                }
             }
         }
     }

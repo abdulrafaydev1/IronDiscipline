@@ -1,97 +1,130 @@
 package com.irondiscipline.app.alarm
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.PowerManager
 import android.util.Log
 
 /**
- * Dual WakeLock Manager that guarantees CPU execution and forces display panel wake-up
- * from deep sleep when an IronDiscipline alarm fires.
+ * High-Reliability WakeLock Manager.
+ * 1. maintainPendingAlarmCpuLock: Holds PARTIAL_WAKE_LOCK whenever an alarm is enabled,
+ *    guaranteeing CPU & Handler loops never freeze during screen-off sleep.
+ * 2. acquireRingingWakeLocks: Turns the physical screen ON and holds CPU during ringing.
  */
 object AlarmWakeLockManager {
-
     private const val TAG = "AlarmWakeLockManager"
 
     @Volatile
-    private var cpuWakeLock: PowerManager.WakeLock? = null
+    private var pendingCpuWakeLock: PowerManager.WakeLock? = null
 
     @Volatile
-    private var screenWakeLock: PowerManager.WakeLock? = null
+    private var ringingCpuWakeLock: PowerManager.WakeLock? = null
+
+    @Volatile
+    private var ringingScreenWakeLock: PowerManager.WakeLock? = null
 
     /**
-     * Acquires CPU partial wake lock and screen bright wake lock with CAUSES_WAKEUP.
+     * Call this whenever there is at least 1 enabled alarm.
+     * Keeps the CPU ticking 100% reliably while the screen is completely OFF.
      */
+    @SuppressLint("WakelockTimeout")
     @Synchronized
-    fun acquireWakeLocks(context: Context, timeoutMs: Long = 15 * 60 * 1000L) {
+    fun maintainPendingAlarmCpuLock(context: Context, hasEnabledAlarms: Boolean) {
         val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-
-        // 1. CPU WakeLock (PARTIAL_WAKE_LOCK) - guarantees continuous AudioTrack PCM audio & vibration
-        try {
-            if (cpuWakeLock == null) {
-                cpuWakeLock = pm.newWakeLock(
+        if (hasEnabledAlarms) {
+            if (pendingCpuWakeLock == null) {
+                pendingCpuWakeLock = pm.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
-                    "IronDiscipline:AlarmCpuWakeLock"
-                ).apply {
-                    setReferenceCounted(false)
+                    "IronDiscipline:PendingAlarmCpuLock"
+                ).apply { setReferenceCounted(false) }
+            }
+            if (pendingCpuWakeLock?.isHeld == false) {
+                try {
+                    pendingCpuWakeLock?.acquire()
+                    Log.d(TAG, "Pending Alarm CPU WakeLock acquired (CPU remains ticking during screen-off)")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error acquiring pending CPU WakeLock", e)
                 }
             }
-            if (cpuWakeLock?.isHeld != true) {
-                cpuWakeLock?.acquire(timeoutMs)
-                Log.d(TAG, "CPU WakeLock acquired ($timeoutMs ms timeout)")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire CPU WakeLock", e)
-        }
-
-        // 2. Screen WakeLock - Physically forces the screen to turn ON from deep sleep
-        try {
-            @Suppress("DEPRECATION")
-            val screenFlags = PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
-                PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                PowerManager.ON_AFTER_RELEASE
-
-            if (screenWakeLock == null) {
-                screenWakeLock = pm.newWakeLock(
-                    screenFlags,
-                    "IronDiscipline:AlarmScreenWakeLock"
-                ).apply {
-                    setReferenceCounted(false)
+        } else {
+            try {
+                if (pendingCpuWakeLock?.isHeld == true) {
+                    pendingCpuWakeLock?.release()
+                    Log.d(TAG, "Pending Alarm CPU WakeLock released (no enabled alarms)")
                 }
-            }
-            if (screenWakeLock?.isHeld != true) {
-                screenWakeLock?.acquire(60 * 1000L) // 60s is ample to wake screen and render activity
-                Log.d(TAG, "Screen WakeLock acquired (forces display ON)")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire Screen WakeLock", e)
+            } catch (_: Exception) {}
         }
     }
 
     /**
-     * Safely releases both screen and CPU WakeLocks.
+     * Call this the exact millisecond an alarm triggers to wake both the CPU and the physical screen!
      */
+    @Suppress("DEPRECATION")
     @Synchronized
-    fun releaseAll() {
-        try {
-            if (screenWakeLock?.isHeld == true) {
-                screenWakeLock?.release()
-                Log.d(TAG, "Screen WakeLock released")
+    fun acquireRingingWakeLocks(context: Context) {
+        val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+
+        if (ringingCpuWakeLock == null) {
+            ringingCpuWakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "IronDiscipline:RingingCpuWakeLock"
+            ).apply { setReferenceCounted(false) }
+        }
+        if (ringingCpuWakeLock?.isHeld == false) {
+            try {
+                ringingCpuWakeLock?.acquire(30 * 60 * 1000L)
+                Log.d(TAG, "Ringing CPU WakeLock acquired (30m timeout)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring ringing CPU WakeLock", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing screen WakeLock", e)
-        } finally {
-            screenWakeLock = null
         }
 
-        try {
-            if (cpuWakeLock?.isHeld == true) {
-                cpuWakeLock?.release()
-                Log.d(TAG, "CPU WakeLock released")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing CPU WakeLock", e)
-        } finally {
-            cpuWakeLock = null
+        if (ringingScreenWakeLock == null) {
+            ringingScreenWakeLock = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "IronDiscipline:RingingScreenWakeLock"
+            ).apply { setReferenceCounted(false) }
         }
+        if (ringingScreenWakeLock?.isHeld == false) {
+            try {
+                ringingScreenWakeLock?.acquire(10 * 60 * 1000L)
+                Log.d(TAG, "Ringing Screen WakeLock acquired (forces display ON)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring ringing Screen WakeLock", e)
+            }
+        }
+    }
+
+    /**
+     * Backwards-compatible alias for acquireRingingWakeLocks.
+     */
+    fun acquireWakeLocks(context: Context) {
+        acquireRingingWakeLocks(context)
+    }
+
+    @Synchronized
+    fun releaseRingingWakeLocks() {
+        try {
+            if (ringingCpuWakeLock?.isHeld == true) {
+                ringingCpuWakeLock?.release()
+                Log.d(TAG, "Ringing CPU WakeLock released")
+            }
+        } catch (_: Exception) {}
+
+        try {
+            if (ringingScreenWakeLock?.isHeld == true) {
+                ringingScreenWakeLock?.release()
+                Log.d(TAG, "Ringing Screen WakeLock released")
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Releases ringing wake locks (alias).
+     */
+    fun releaseAll() {
+        releaseRingingWakeLocks()
     }
 }

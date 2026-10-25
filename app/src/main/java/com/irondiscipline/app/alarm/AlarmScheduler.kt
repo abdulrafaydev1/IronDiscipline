@@ -51,12 +51,14 @@ class AlarmScheduler(private val context: Context) {
         val nextTriggerMs = calculateNextTriggerEpochMs(alarm)
 
         val triggerIntent = Intent(context, AlarmReceiver::class.java).apply {
-            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
-            data = Uri.parse("ironalarm://trigger/${alarm.id}")
             putExtra(EXTRA_ALARM_ID, alarm.id)
+            putExtra("EXTRA_ALARM_ID", alarm.id)
             putExtra(EXTRA_ALARM_LABEL, alarm.label)
+            putExtra("EXTRA_ALARM_LABEL", alarm.label)
             putExtra(EXTRA_SOUND_INDEX, alarm.soundIndex)
+            putExtra("EXTRA_SOUND_INDEX", alarm.soundIndex)
             putExtra(EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+            putExtra("EXTRA_DELETE_AFTER_RINGING", alarm.deleteAfterRinging)
             putExtra("EXTRA_IS_NEW_TRIGGER", true)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
@@ -65,7 +67,7 @@ class AlarmScheduler(private val context: Context) {
             context,
             alarm.id.hashCode(),
             triggerIntent,
-            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val showIntent = Intent(context, MainActivity::class.java)
@@ -102,6 +104,9 @@ class AlarmScheduler(private val context: Context) {
                 Log.e("AlarmDiag", "[SCHEDULE] Failed to schedule exact alarm fallback: ${e.message}")
             }
         }
+
+        // Maintain CPU partial wakelock whenever an alarm is scheduled
+        AlarmWakeLockManager.maintainPendingAlarmCpuLock(context, hasEnabledAlarms = true)
     }
 
     /**
@@ -110,9 +115,8 @@ class AlarmScheduler(private val context: Context) {
     fun cancelAlarm(alarmId: String) {
         val am = alarmManager ?: return
         val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
-            data = Uri.parse("ironalarm://trigger/$alarmId")
             putExtra(EXTRA_ALARM_ID, alarmId)
+            putExtra("EXTRA_ALARM_ID", alarmId)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
@@ -124,6 +128,12 @@ class AlarmScheduler(private val context: Context) {
             am.cancel(pendingIntent)
             pendingIntent.cancel()
         }
+
+        // Update CPU partial wakelock state
+        try {
+            val hasEnabled = AlarmRepository.getInstance(context).alarmsFlow.value.any { it.isEnabled && it.id != alarmId }
+            AlarmWakeLockManager.maintainPendingAlarmCpuLock(context, hasEnabled)
+        } catch (_: Exception) {}
     }
 
     /**
@@ -134,9 +144,14 @@ class AlarmScheduler(private val context: Context) {
         val triggerMs = System.currentTimeMillis() + (snoozeMinutes * 60 * 1000L)
 
         val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
-            data = Uri.parse("ironalarm://trigger/${alarm.id}")
             putExtra(EXTRA_ALARM_ID, alarm.id)
+            putExtra("EXTRA_ALARM_ID", alarm.id)
+            putExtra(EXTRA_ALARM_LABEL, alarm.label)
+            putExtra("EXTRA_ALARM_LABEL", alarm.label)
+            putExtra(EXTRA_SOUND_INDEX, alarm.soundIndex)
+            putExtra("EXTRA_SOUND_INDEX", alarm.soundIndex)
+            putExtra(EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+            putExtra("EXTRA_DELETE_AFTER_RINGING", alarm.deleteAfterRinging)
             putExtra("EXTRA_IS_NEW_TRIGGER", true)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
@@ -145,7 +160,7 @@ class AlarmScheduler(private val context: Context) {
             context,
             alarm.id.hashCode(),
             intent,
-            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val showIntent = Intent(context, MainActivity::class.java)
@@ -164,6 +179,8 @@ class AlarmScheduler(private val context: Context) {
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pendingIntent)
             }
         }
+
+        AlarmWakeLockManager.maintainPendingAlarmCpuLock(context, hasEnabledAlarms = true)
     }
 
     /**
