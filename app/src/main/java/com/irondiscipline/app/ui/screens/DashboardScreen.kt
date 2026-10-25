@@ -97,9 +97,7 @@ fun DashboardScreen(
     permissionState: PermissionStatusState,
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit,
-    onResetAllTimers: () -> Unit,
-    onResetSingleApp: (appKey: String) -> Unit,
-    onRefreshPermissions: () -> Unit
+    onRefreshPermissions: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -148,12 +146,11 @@ fun DashboardScreen(
             )
         }
 
-        // 4. Tactical Control Capsule (30-Min Strict Mode vs. 1-Min Test Mode + Reset All)
+        // 4. Tactical Control Capsule (Auto-Resets on Toggle)
         TacticalControlCapsule(
             isTestMode = isTestMode,
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
-            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode,
-            onResetAllTimers = onResetAllTimers
+            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode
         )
 
         // 5. Section Header
@@ -194,8 +191,7 @@ fun DashboardScreen(
 
             PremiumAppDisciplineCard(
                 status = status,
-                isTestMode = isTestMode,
-                onResetApp = { onResetSingleApp(target.appKey) }
+                isTestMode = isTestMode
             )
         }
 
@@ -566,14 +562,13 @@ private fun SleekPermissionAlertCard(
 }
 
 /**
- * 4. Tactical Control Capsule (30-Min Strict Mode vs. 1-Min Test Mode).
+ * 4. Tactical Control Capsule (Auto-Resets when toggling between 30-Min Normal and 1-Min Test Mode).
  */
 @Composable
 private fun TacticalControlCapsule(
     isTestMode: Boolean,
     onActivateOneMinuteTestMode: () -> Unit,
-    onSwitchBackToNormalThirtyMinMode: () -> Unit,
-    onResetAllTimers: () -> Unit
+    onSwitchBackToNormalThirtyMinMode: () -> Unit
 ) {
     val modeAccentColor by animateColorAsState(
         targetValue = if (isTestMode) ColorCyberAmber else ColorElectricEmerald,
@@ -621,67 +616,39 @@ private fun TacticalControlCapsule(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Two Sleek Tactile Pill Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            // Single Full-Width Mode Toggle & Auto-Reset Button
+            Button(
+                onClick = {
+                    if (isTestMode) onSwitchBackToNormalThirtyMinMode() else onActivateOneMinuteTestMode()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isTestMode) Color(0xFF1E283A) else Color(0xFF261D0E),
+                    contentColor = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
+                ),
+                border = BorderStroke(
+                    width = 1.2.dp,
+                    color = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
+                )
             ) {
-                // Button 1: Mode Switch
-                Button(
-                    onClick = {
-                        if (isTestMode) onSwitchBackToNormalThirtyMinMode() else onActivateOneMinuteTestMode()
+                Icon(
+                    imageVector = if (isTestMode) Icons.Default.Shield else Icons.Default.Bolt,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isTestMode) {
+                        "🛡️ Switch to 30-Min Normal Mode (Auto-Resets)"
+                    } else {
+                        "⚡ Activate 1-Min Test Mode (Auto-Resets)"
                     },
-                    modifier = Modifier
-                        .weight(1.2f)
-                        .height(46.dp),
-                    shape = RoundedCornerShape(13.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isTestMode) Color(0xFF1E283A) else Color(0xFF261D0E),
-                        contentColor = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
-                    ),
-                    border = BorderStroke(
-                        width = 1.2.dp,
-                        color = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (isTestMode) Icons.Default.Shield else Icons.Default.Bolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isTestMode) "Set 30-Min Mode" else "1-Min Test Mode",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 12.sp
-                    )
-                }
-
-                // Button 2: Outlined Dark Metallic Reset Button
-                Button(
-                    onClick = onResetAllTimers,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp),
-                    shape = RoundedCornerShape(13.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF182030),
-                        contentColor = ColorTextPrimary
-                    ),
-                    border = BorderStroke(1.dp, Color(0xFF334460))
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Reset Timers",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
+                )
             }
         }
     }
@@ -693,8 +660,7 @@ private fun TacticalControlCapsule(
 @Composable
 private fun PremiumAppDisciplineCard(
     status: CoreAppQuotaStatus,
-    isTestMode: Boolean,
-    onResetApp: () -> Unit
+    isTestMode: Boolean
 ) {
     val isLocked = status.isLocked
 
@@ -847,26 +813,9 @@ private fun PremiumAppDisciplineCard(
                         Text(
                             text = "${status.usedSeconds}s used",
                             color = ColorTextMuted,
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontFamily = FontFamily.Monospace
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        // Mini Reset Action
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0xFF1B2436))
-                                .border(0.8.dp, Color(0xFF2E3D56), RoundedCornerShape(6.dp))
-                                .clickable { onResetApp() }
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Text(
-                                text = "↺ Reset",
-                                color = ColorElectricEmerald,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
                     }
                 }
             }
