@@ -197,6 +197,7 @@ class DisciplineRepository(
      * and resets today's test usage counters to 0 seconds.
      */
     suspend fun activateOneMinuteTestMode() {
+        if (realtimeQuotaManager?.isAnyAppLocked() == true) return
         val todayStr = LocalDate.now().toString()
         realtimeQuotaManager?.activateGlobalOneMinuteTestMode()
         dao.resetUsedSecondsForDate(todayStr)
@@ -223,6 +224,7 @@ class DisciplineRepository(
      * Instagram, and TikTok and resets the current counters to 0 seconds.
      */
     suspend fun switchBackToNormalThirtyMinModeAndReset() {
+        if (realtimeQuotaManager?.isAnyAppLocked() == true) return
         val todayStr = LocalDate.now().toString()
         realtimeQuotaManager?.switchBackToNormalThirtyMinModeAndReset()
         dao.resetUsedSecondsForDate(todayStr)
@@ -249,6 +251,7 @@ class DisciplineRepository(
      * Resets all app timers and locks.
      */
     suspend fun unlockAndResetTimerForTesting() {
+        if (realtimeQuotaManager?.isAnyAppLocked() == true) return
         val todayStr = LocalDate.now().toString()
         realtimeQuotaManager?.resetAllTimersAndLocks()
         dao.resetUsedSecondsForDate(todayStr)

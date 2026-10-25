@@ -113,6 +113,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             while (isActive) {
                 delay(500L)
                 val nowMs = System.currentTimeMillis()
+                realtimeQuotaManager.tickLockCountdowns()
                 realtimeQuotaManager.checkExpiryAndMidnightRollover(nowMs)
 
                 // If user is inside IronDiscipline MainActivity (Dashboard), hide overlay
@@ -132,6 +133,21 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 }
 
                 val fgPkg = currentForegroundPackage
+
+                // Anti-Tamper: Block Settings access if ANY app is currently in a 5-hour lock
+                if (realtimeQuotaManager.isAnyAppLocked() && !fgPkg.isNullOrBlank()) {
+                    if (SETTINGS_AND_INSTALLER_PACKAGES.contains(fgPkg) || fgPkg == "com.android.settings") {
+                        if (inspectSettingsForFiveHourTamper(null)) {
+                            performGlobalAction(GLOBAL_ACTION_HOME)
+                            showOrUpdateNonCoreBlockOverlay(
+                                "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked.",
+                                nowMs
+                            )
+                            stopVideoAndSilenceAudio()
+                            continue
+                        }
+                    }
+                }
 
                 // Anti-Cheat: Block Calculator during wake-up math mission
                 val sharedPrefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
@@ -231,6 +247,21 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             if (CALCULATOR_PACKAGES.contains(pkgName) || pkgName.contains("calc", ignoreCase = true)) {
                 showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)", System.currentTimeMillis())
                 return
+            }
+        }
+
+        // Anti-Tamper: Block Settings access if ANY app has an active 5-hour lock
+        if (realtimeQuotaManager.isAnyAppLocked()) {
+            if (SETTINGS_AND_INSTALLER_PACKAGES.contains(pkgName) || pkgName == "com.android.settings") {
+                if (inspectSettingsForFiveHourTamper(safeEvent)) {
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    showOrUpdateNonCoreBlockOverlay(
+                        "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked.",
+                        System.currentTimeMillis()
+                    )
+                    stopVideoAndSilenceAudio()
+                    return
+                }
             }
         }
 
@@ -557,9 +588,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
         cardContainer.addView(trackingBadgeTv)
 
-        // 3. Main Title: "[AppName] Block Ho Gaya Hai"
+        // 3. Main Title: "[AppName] 5-Hour Lock Active!"
         val headerTv = TextView(this).apply {
-            text = "$appName Block Ho Gaya Hai"
+            text = "$appName 5-Hour Lock Active!"
             setTextColor(Color.parseColor("#FFFFFF"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -588,7 +619,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             bottomMargin = dp(20)
         }
         val quoteTv = TextView(this).apply {
-            text = "“Apne maqsad ko yaad rakho. Yeh waqt dobara laut kar nahi aayega.”"
+            text = "“Yeh app 5 ghante ke liye strict lock ho chuki hai. 5 ghante se pehle yeh kisi surat unlock nahi hogi.”"
             setTextColor(Color.parseColor("#94A3B8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.ITALIC)
@@ -618,7 +649,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         val labelTv = TextView(this).apply {
-            text = "UNLOCK HONE MEIN BAQI WAQT"
+            text = "UNLOCK HONE MEIN BAQI WAQT (5 HOURS STRICT)"
             setTextColor(Color.parseColor("#94A3B8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -628,11 +659,11 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         countdownLabelTextView = labelTv
         countdownBox.addView(labelTv)
 
-        val lockedUntilMs = if (appKey != null) realtimeQuotaManager.getLockedUntilEpochMs(appKey) else 0L
-        val initialRemainingMs = if (lockedUntilMs > nowMs) lockedUntilMs - nowMs else RealtimeQuotaManager.TEST_MODE_LOCK_DURATION_MS
+        val remainingSec = if (appKey != null) realtimeQuotaManager.getRemainingLockSeconds(appKey) else RealtimeQuotaManager.FIVE_HOURS_SECONDS
+        val initialRemainingSec = if (remainingSec > 0) remainingSec else RealtimeQuotaManager.FIVE_HOURS_SECONDS
 
         val timerTv = TextView(this).apply {
-            text = RealtimeQuotaManager.formatMillisToHhMmSs(initialRemainingMs)
+            text = RealtimeQuotaManager.formatSecondsToHhMmSs(initialRemainingSec)
             setTextColor(Color.parseColor("#FF4D6D"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
@@ -643,7 +674,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         countdownBox.addView(timerTv)
 
         val footerNoteTv = TextView(this).apply {
-            text = "Meharbani farma kar unlock time pura hone ka wait karein."
+            text = "Discipline is absolute. Changing phone date/time will not unlock this app."
             setTextColor(Color.parseColor("#64748B"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             gravity = Gravity.CENTER
@@ -683,9 +714,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     private fun updateOverlayLiveCountdownText(appKey: String, nowMs: Long = System.currentTimeMillis()) {
         val tv = countdownTimerTextView ?: return
-        val lockedUntilMs = realtimeQuotaManager.getLockedUntilEpochMs(appKey)
-        val remainingMs = (lockedUntilMs - nowMs).coerceAtLeast(0L)
-        tv.text = RealtimeQuotaManager.formatMillisToHhMmSs(remainingMs)
+        val remainingSec = realtimeQuotaManager.getRemainingLockSeconds(appKey)
+        tv.text = RealtimeQuotaManager.formatSecondsToHhMmSs(remainingSec)
     }
 
     fun hideNativeBlockOverlay() {
@@ -758,6 +788,40 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         return null
+    }
+
+    private fun inspectSettingsForFiveHourTamper(safeEvent: AccessibilityEvent?): Boolean {
+        val eventTexts = safeEvent?.text?.joinToString(" ") { it.toString() }?.lowercase().orEmpty()
+        val eventDesc = safeEvent?.contentDescription?.toString()?.lowercase().orEmpty()
+        val className = safeEvent?.className?.toString()?.lowercase().orEmpty()
+        val combinedEvent = "$eventTexts $eventDesc $className"
+
+        val tamperKeywords = listOf(
+            "irondiscipline",
+            "iron discipline",
+            "accessibility",
+            "app info",
+            "force stop",
+            "clear data",
+            "clear storage",
+            "date & time",
+            "date and time",
+            "time zone",
+            "automatic date",
+            "set time",
+            "set date"
+        )
+
+        if (tamperKeywords.any { combinedEvent.contains(it) }) {
+            return true
+        }
+
+        val rootNode = try { rootInActiveWindow } catch (_: Exception) { null } ?: return false
+        val scrapedTexts = mutableListOf<String>()
+        collectVisibleTexts(rootNode, scrapedTexts, maxNodes = 100)
+        val fullWindowContent = scrapedTexts.joinToString(" | ").lowercase()
+
+        return tamperKeywords.any { fullWindowContent.contains(it) }
     }
 
     private fun collectVisibleTexts(node: AccessibilityNodeInfo?, outList: MutableList<String>, maxNodes: Int) {

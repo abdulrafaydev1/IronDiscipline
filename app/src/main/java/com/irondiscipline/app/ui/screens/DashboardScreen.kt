@@ -149,6 +149,7 @@ fun DashboardScreen(
         // 4. Tactical Control Capsule (Auto-Resets on Toggle)
         TacticalControlCapsule(
             isTestMode = isTestMode,
+            isAnyAppLocked = realtimeQuotaState.anyAppLocked,
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
             onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode
         )
@@ -562,16 +563,21 @@ private fun SleekPermissionAlertCard(
 }
 
 /**
- * 4. Tactical Control Capsule (Auto-Resets when toggling between 30-Min Normal and 1-Min Test Mode).
+ * 4. Tactical Control Capsule (Disabled when any app is locked for 5 hours).
  */
 @Composable
 private fun TacticalControlCapsule(
     isTestMode: Boolean,
+    isAnyAppLocked: Boolean,
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit
 ) {
     val modeAccentColor by animateColorAsState(
-        targetValue = if (isTestMode) ColorCyberAmber else ColorElectricEmerald,
+        targetValue = when {
+            isAnyAppLocked -> ColorCrimsonNeon
+            isTestMode -> ColorCyberAmber
+            else -> ColorElectricEmerald
+        },
         animationSpec = tween(400),
         label = "ModeAccentColor"
     )
@@ -582,12 +588,18 @@ private fun TacticalControlCapsule(
             .border(
                 width = 1.dp,
                 brush = Brush.linearGradient(
-                    colors = listOf(ColorCardBorderStart, ColorCardBorderEnd)
+                    colors = if (isAnyAppLocked) {
+                        listOf(ColorCrimsonNeon.copy(alpha = 0.6f), ColorCrimsonDark.copy(alpha = 0.3f))
+                    } else {
+                        listOf(ColorCardBorderStart, ColorCardBorderEnd)
+                    }
                 ),
                 shape = RoundedCornerShape(20.dp)
             ),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = ColorElevatedSlate)
+        colors = CardDefaults.cardColors(
+            containerColor = if (isAnyAppLocked) Color(0xFF160B10) else ColorElevatedSlate
+        )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             // Mode Header Badge
@@ -598,14 +610,22 @@ private fun TacticalControlCapsule(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = if (isTestMode) Icons.Default.Bolt else Icons.Default.Shield,
+                        imageVector = when {
+                            isAnyAppLocked -> Icons.Default.Lock
+                            isTestMode -> Icons.Default.Bolt
+                            else -> Icons.Default.Shield
+                        },
                         contentDescription = null,
                         tint = modeAccentColor,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isTestMode) "⚡ DIAGNOSTIC TEST: 1 MIN / APP" else "🛡️ STRICT PROTOCOL: 30 MINS / APP",
+                        text = when {
+                            isAnyAppLocked -> "🔒 UNBREAKABLE 5-HOUR LOCK ACTIVE"
+                            isTestMode -> "⚡ DIAGNOSTIC TEST: 1 MIN / APP"
+                            else -> "🛡️ STRICT PROTOCOL: 30 MINS / APP"
+                        },
                         color = modeAccentColor,
                         fontWeight = FontWeight.Black,
                         fontSize = 12.sp,
@@ -619,35 +639,56 @@ private fun TacticalControlCapsule(
             // Single Full-Width Mode Toggle & Auto-Reset Button
             Button(
                 onClick = {
-                    if (isTestMode) onSwitchBackToNormalThirtyMinMode() else onActivateOneMinuteTestMode()
+                    if (!isAnyAppLocked) {
+                        if (isTestMode) onSwitchBackToNormalThirtyMinMode() else onActivateOneMinuteTestMode()
+                    }
                 },
+                enabled = !isAnyAppLocked,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
                 shape = RoundedCornerShape(13.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isTestMode) Color(0xFF1E283A) else Color(0xFF261D0E),
-                    contentColor = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
+                    containerColor = when {
+                        isAnyAppLocked -> Color(0xFF261017)
+                        isTestMode -> Color(0xFF1E283A)
+                        else -> Color(0xFF261D0E)
+                    },
+                    contentColor = when {
+                        isAnyAppLocked -> ColorCrimsonNeon
+                        isTestMode -> ColorElectricEmerald
+                        else -> ColorCyberAmber
+                    },
+                    disabledContainerColor = Color(0xFF261017),
+                    disabledContentColor = ColorCrimsonNeon
                 ),
                 border = BorderStroke(
                     width = 1.2.dp,
-                    color = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
+                    color = when {
+                        isAnyAppLocked -> ColorCrimsonNeon
+                        isTestMode -> ColorElectricEmerald
+                        else -> ColorCyberAmber
+                    }
                 )
             ) {
                 Icon(
-                    imageVector = if (isTestMode) Icons.Default.Shield else Icons.Default.Bolt,
+                    imageVector = when {
+                        isAnyAppLocked -> Icons.Default.Lock
+                        isTestMode -> Icons.Default.Shield
+                        else -> Icons.Default.Bolt
+                    },
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isTestMode) {
-                        "🛡️ Switch to 30-Min Normal Mode (Auto-Resets)"
-                    } else {
-                        "⚡ Activate 1-Min Test Mode (Auto-Resets)"
+                    text = when {
+                        isAnyAppLocked -> "🔒 LOCKED: Test Mode Disabled Until 5-Hr Lock Expires"
+                        isTestMode -> "🛡️ Switch to 30-Min Normal Mode (Auto-Resets)"
+                        else -> "⚡ Activate 1-Min Test Mode (Auto-Resets)"
                     },
                     fontWeight = FontWeight.Black,
-                    fontSize = 13.sp
+                    fontSize = 12.sp
                 )
             }
         }
@@ -754,7 +795,7 @@ private fun PremiumAppDisciplineCard(
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = if (isLocked) "LOCKED" else "UNLOCKED",
+                        text = if (isLocked) "LOCKED FOR 5 HOURS" else "UNLOCKED",
                         color = if (isLocked) ColorCrimsonNeon else ColorElectricEmerald,
                         fontWeight = FontWeight.Black,
                         fontSize = 10.sp,

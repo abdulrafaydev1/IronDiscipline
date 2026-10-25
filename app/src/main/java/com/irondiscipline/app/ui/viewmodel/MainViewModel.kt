@@ -194,6 +194,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- 1-Minute Test Mode vs 30-Minute Normal Mode & Reset Actions ---
     fun activateOneMinuteTestMode() {
+        if (realtimeQuotaManager.isAnyAppLocked()) {
+            postBannerMessage("Action Blocked: Test mode cannot be changed while a 5-hour lock is active.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             repository.activateOneMinuteTestMode()
             AppBlockerAccessibilityService.dismissOverlayIfShowing()
@@ -202,14 +206,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun switchBackToNormalThirtyMinModeAndReset() {
+        if (realtimeQuotaManager.isAnyAppLocked()) {
+            postBannerMessage("Action Blocked: Mode cannot be changed while a 5-hour lock is active.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             repository.switchBackToNormalThirtyMinModeAndReset()
             AppBlockerAccessibilityService.dismissOverlayIfShowing()
-            postBannerMessage("Switched to 30-Min Normal Mode (1800s limit) & reset lock/timer.")
+            postBannerMessage("Switched to 30-Min Normal Mode (1800s limit).")
         }
     }
 
     fun unlockAndResetTimerForTesting() {
+        if (realtimeQuotaManager.isAnyAppLocked()) {
+            postBannerMessage("Action Blocked: 5-Hour lock is strictly unbreakable.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             repository.unlockAndResetTimerForTesting()
             AppBlockerAccessibilityService.dismissOverlayIfShowing()
@@ -218,6 +230,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setAppLimitMinutes(appKey: String, limitMinutes: Int) {
+        if (realtimeQuotaManager.getRemainingLockSeconds(appKey) > 0) {
+            postBannerMessage("Action Blocked: Cannot modify limit for $appKey while 5-hour lock is active.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             repository.setAppLimitMinutes(appKey, limitMinutes)
             AppBlockerAccessibilityService.dismissOverlayIfShowing()
@@ -226,6 +242,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetSingleApp(appKey: String) {
+        if (realtimeQuotaManager.getRemainingLockSeconds(appKey) > 0) {
+            postBannerMessage("Action Blocked: $appKey is locked for 5 hours and cannot be reset.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             repository.resetSingleApp(appKey)
             AppBlockerAccessibilityService.dismissOverlayIfShowing()

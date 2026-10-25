@@ -13,6 +13,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
         ) {
             DisciplineMonitorService.startServiceIfNeeded(context)
             try {
+                com.irondiscipline.app.util.RealtimeQuotaManager.getInstance(context).refreshSnapshotNow()
+            } catch (_: Exception) {}
+            try {
                 com.irondiscipline.app.alarm.AlarmRepository.getInstance(context).rescheduleAllActiveAlarms()
             } catch (_: Exception) {}
         }
