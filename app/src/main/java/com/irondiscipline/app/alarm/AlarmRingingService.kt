@@ -12,7 +12,6 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -28,18 +27,21 @@ import kotlinx.coroutines.launch
 
 /**
  * Foreground Service that plays the synthesized PCM hard alarm sound and drives heavy vibration.
- * Maintains full-screen notification intent and sets the anti-cheat flag in SharedPreferences.
+ * Maintains full-screen notification intent, holds WakeLocks, launches AlarmRingingActivity
+ * directly over the lock screen, and guards maximum alarm volume.
  */
 class AlarmRingingService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default)
     private var volumeGuardJob: Job? = null
-    private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
     private val soundEngine = HardAlarmSoundEngine.getInstance()
 
+    @Volatile
+    private var currentlyRingingAlarmId: String? = null
+
     companion object {
-        const val CHANNEL_ID = "iron_discipline_hard_alarm_channel"
+        const val CHANNEL_ID = "iron_alarm_lockscreen_channel_v2"
         const val NOTIFICATION_ID = 2026
 
         fun stopRinging(context: Context, alarmId: String? = null) {
@@ -54,11 +56,8 @@ class AlarmRingingService : Service() {
         super.onCreate()
         createNotificationChannel()
 
-        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IronDiscipline:AlarmRingingLock")?.apply {
-            setReferenceCounted(false)
-            acquire(15 * 60 * 1000L) // 15 mins timeout safety
-        }
+        // Acquire CPU and Screen WakeLocks immediately
+        AlarmWakeLockManager.acquireWakeLocks(this)
 
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
@@ -68,7 +67,7 @@ class AlarmRingingService : Service() {
             getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }
 
-        // Anti-Cheat: block calculator apps while alarm is actively ringing
+        // Anti-Cheat: block distracting apps while alarm is actively ringing
         val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("is_alarm_currently_ringing", true).commit()
     }
@@ -78,6 +77,10 @@ class AlarmRingingService : Service() {
         val repository = AlarmRepository.getInstance(applicationContext)
         val alarm = if (alarmId != null) repository.getAlarmById(alarmId) else null
 
+        // Re-ensure WakeLocks are held
+        AlarmWakeLockManager.acquireWakeLocks(this)
+
+        // 1. Build and post high-priority lock-screen notification
         val notification = buildRingingNotification(alarmId, alarm)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceCompat.startForeground(
@@ -90,7 +93,29 @@ class AlarmRingingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // 1. Max Volume Override & 1-Second Periodic Volume Guard
+        // 2. Direct Activity Launch in addition to fullScreenIntent
+        try {
+            val activityIntent = Intent(this, AlarmRingingActivity::class.java).apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm?.label)
+                putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm?.soundIndex ?: 0)
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                )
+            }
+            startActivity(activityIntent)
+        } catch (_: Exception) {}
+
+        // 3. Prevent duplicate playback threads if already ringing for this alarm
+        if (currentlyRingingAlarmId != null && currentlyRingingAlarmId == alarmId) {
+            return START_STICKY
+        }
+        currentlyRingingAlarmId = alarmId
+
+        // 4. Max Volume Override & 1-Second Periodic Volume Guard
         volumeGuardJob?.cancel()
         volumeGuardJob = serviceScope.launch {
             val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -107,14 +132,12 @@ class AlarmRingingService : Service() {
             }
         }
 
-        // 2. Play Selected High-Decibel Hard Sound
-        val soundIndex = alarm?.soundIndex ?: 0
+        // 5. Play Selected High-Decibel Hard Sound
+        val soundIndex = alarm?.soundIndex ?: intent?.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0) ?: 0
         soundEngine.startLoopingSound(soundIndex)
 
-        // 3. Heavy Vibration Pulse (if enabled)
-        if (alarm?.vibrateWhileRinging != false) {
-            startHeavyVibration()
-        }
+        // 6. Heavy Vibration Pulse
+        startHeavyVibration()
 
         return START_STICKY
     }
@@ -140,13 +163,14 @@ class AlarmRingingService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Hard Discipline Alarms",
+                "Iron Discipline Hard Alarm",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "High-priority wake up alerts for IronDiscipline"
-                setSound(null, null) // AudioTrack handles sound
+                setSound(null, null) // Handled by HardAlarmSoundEngine AudioTrack
                 enableVibration(true)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setBypassDnd(true)
             }
             val nm = getSystemService(NotificationManager::class.java)
             nm?.createNotificationChannel(channel)
@@ -159,7 +183,12 @@ class AlarmRingingService : Service() {
 
         val fullScreenIntent = Intent(this, AlarmRingingActivity::class.java).apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_NO_USER_ACTION
+            )
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this,
@@ -168,14 +197,13 @@ class AlarmRingingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Math Hard is mandatory: Notification only opens AlarmRingingActivity.
-        // No direct dismiss or snooze action buttons allowed.
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
             .setContentText(label)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
@@ -184,6 +212,7 @@ class AlarmRingingService : Service() {
     }
 
     override fun onDestroy() {
+        currentlyRingingAlarmId = null
         volumeGuardJob?.cancel()
         soundEngine.stopSound()
 
@@ -191,11 +220,9 @@ class AlarmRingingService : Service() {
             vibrator?.cancel()
         } catch (_: Exception) {}
 
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {}
+        // Release WakeLocks and Active Alarm State
+        AlarmWakeLockManager.releaseAll()
+        ActiveAlarmSessionState.clearSession()
 
         // Release Anti-Cheat flag
         val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)

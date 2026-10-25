@@ -3,56 +3,76 @@ package com.irondiscipline.app.alarm
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
+import androidx.core.content.ContextCompat
 
 /**
  * BroadcastReceiver triggered by AlarmManager.setAlarmClock.
- * Hands off execution immediately to AlarmRingingService and launches AlarmRingingActivity.
+ * Instantly acquires WakeLocks to prevent CPU sleep, starts AlarmRingingService in foreground,
+ * and launches AlarmRingingActivity directly over the lock screen.
  */
 class AlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
         val safeIntent = intent ?: return
+
+        // 1. Boot recovery
+        if (safeIntent.action == Intent.ACTION_BOOT_COMPLETED ||
+            safeIntent.action == "android.intent.action.LOCKED_BOOT_COMPLETED"
+        ) {
+            try {
+                AlarmRepository.getInstance(context).rescheduleAllActiveAlarms()
+            } catch (_: Exception) {}
+            return
+        }
+
+        // 2. First line for alarm triggers: Acquire CPU & Screen WakeLocks immediately
+        AlarmWakeLockManager.acquireWakeLocks(context)
+
         val alarmId = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID) ?: return
+        val alarmLabel = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
+        val soundIndex = safeIntent.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0)
+        val deleteAfter = safeIntent.getBooleanExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, false)
 
         when (safeIntent.action) {
             AlarmScheduler.ACTION_DISMISS_ALARM -> {
-                // Dismiss action from notification
                 val repository = AlarmRepository.getInstance(context)
                 repository.handleAlarmDismissed(alarmId)
-                AlarmRingingService.stopRinging(context)
+                AlarmRingingService.stopRinging(context, alarmId)
             }
 
             AlarmScheduler.ACTION_SNOOZE_ALARM -> {
-                // Snooze action from notification
-                val repository = AlarmRepository.getInstance(context)
-                val alarm = repository.getAlarmById(alarmId)
-                if (alarm != null) {
-                    AlarmScheduler.getInstance(context).scheduleSnooze(alarm, alarm.snoozeMinutes)
-                }
-                AlarmRingingService.stopRinging(context)
+                // Snooze is permanently disabled under IronDiscipline protocols
+                AlarmRingingService.stopRinging(context, alarmId)
             }
 
             AlarmScheduler.ACTION_TRIGGER_ALARM, null -> {
-                // Primary Alarm Trigger: start foreground ringing service & full-screen activity
+                // Initialize persistent Math Hard questions session state for this alarm
+                ActiveAlarmSessionState.initSession(alarmId)
+
+                // Start Foreground Ringing Service (High Priority Audio & 100% Volume Guard)
                 val serviceIntent = Intent(context, AlarmRingingService::class.java).apply {
                     putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
+                    putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                    putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                ContextCompat.startForegroundService(context, serviceIntent)
 
-                val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
-                }
-                context.startActivity(activityIntent)
+                // Direct Activity Launch in addition to fullScreenIntent
+                try {
+                    val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
+                        putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                        putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
+                        putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                        )
+                    }
+                    context.startActivity(activityIntent)
+                } catch (_: Exception) {}
             }
         }
     }

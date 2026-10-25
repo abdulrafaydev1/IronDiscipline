@@ -1,6 +1,10 @@
 package com.irondiscipline.app.ui.screens
 
+import android.Manifest
+import android.os.Build
 import android.text.format.DateFormat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -77,6 +82,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.irondiscipline.app.alarm.AlarmItem
 import com.irondiscipline.app.alarm.AlarmRepository
 import com.irondiscipline.app.alarm.HardAlarmSoundEngine
+import com.irondiscipline.app.util.PermissionHelper
 import kotlinx.coroutines.delay
 import java.util.Calendar
 import java.util.Locale
@@ -86,12 +92,47 @@ fun AlarmScreen(
     alarmRepository: AlarmRepository,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val alarms by alarmRepository.alarmsFlow.collectAsState()
     var isCreateDialogOpen by remember { mutableStateOf(false) }
 
     // Live calculation of next upcoming alarm
     var nextAlarmRemainingMs by remember { mutableStateOf<Long?>(null) }
     var nextAlarmItem by remember { mutableStateOf<AlarmItem?>(null) }
+
+    // Runtime Permission States
+    var hasNotificationPermission by remember {
+        mutableStateOf(PermissionHelper.hasNotificationPermission(context))
+    }
+    var canScheduleExactAlarms by remember {
+        mutableStateOf(PermissionHelper.canScheduleExactAlarms(context))
+    }
+    var canUseFullScreenIntent by remember {
+        mutableStateOf(PermissionHelper.canUseFullScreenIntent(context))
+    }
+
+    val notificationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasNotificationPermission = isGranted
+    }
+
+    // Auto-prompt POST_NOTIFICATIONS on Android 13+ if not granted
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !PermissionHelper.hasNotificationPermission(context)) {
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    // Periodically verify critical alarm permissions
+    LaunchedEffect(Unit) {
+        while (true) {
+            hasNotificationPermission = PermissionHelper.hasNotificationPermission(context)
+            canScheduleExactAlarms = PermissionHelper.canScheduleExactAlarms(context)
+            canUseFullScreenIntent = PermissionHelper.canUseFullScreenIntent(context)
+            delay(2000L)
+        }
+    }
 
     LaunchedEffect(alarms) {
         while (true) {
@@ -149,6 +190,32 @@ fun AlarmScreen(
                             )
                         }
                     }
+                }
+            }
+
+            // Permission Warning Banner if any critical screen-off alarm permission is missing
+            if (!hasNotificationPermission || !canScheduleExactAlarms || !canUseFullScreenIntent) {
+                item {
+                    AlarmPermissionsBanner(
+                        hasNotification = hasNotificationPermission,
+                        canExactAlarm = canScheduleExactAlarms,
+                        canFullScreen = canUseFullScreenIntent,
+                        onRequestNotification = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        },
+                        onRequestExactAlarm = {
+                            try {
+                                context.startActivity(PermissionHelper.createRequestExactAlarmIntent(context))
+                            } catch (_: Exception) {}
+                        },
+                        onRequestFullScreen = {
+                            try {
+                                context.startActivity(PermissionHelper.createManageFullScreenIntent(context))
+                            } catch (_: Exception) {}
+                        }
+                    )
                 }
             }
 
@@ -242,6 +309,146 @@ fun AlarmScreen(
                     isCreateDialogOpen = false
                 }
             )
+        }
+    }
+}
+
+@Composable
+fun AlarmPermissionsBanner(
+    hasNotification: Boolean,
+    canExactAlarm: Boolean,
+    canFullScreen: Boolean,
+    onRequestNotification: () -> Unit,
+    onRequestExactAlarm: () -> Unit,
+    onRequestFullScreen: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF221115)),
+        border = BorderStroke(1.2.dp, Color(0xFFFF2E54).copy(alpha = 0.8f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.WarningAmber,
+                    contentDescription = null,
+                    tint = Color(0xFFFF2E54),
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "CRITICAL PERMISSIONS REQUIRED",
+                    color = Color(0xFFFF2E54),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp
+                )
+            }
+
+            Text(
+                text = "To guarantee the alarm fires at full volume and pops open over the lock screen while your display is OFF, please authorize these permissions:",
+                color = Color(0xFFCBD5E1),
+                fontSize = 11.sp,
+                lineHeight = 15.sp
+            )
+
+            if (!canExactAlarm) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "• Exact Alarm Scheduling",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Prevents Android Doze from delaying alarms.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Button(
+                        onClick = onRequestExactAlarm,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Grant", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+
+            if (!canFullScreen) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "• Full-Screen Lock Popup",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows waking and rendering over lock screen.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Button(
+                        onClick = onRequestFullScreen,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Authorize", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+
+            if (!hasNotification) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "• Notifications Permission",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Required for high-priority lock-screen alerts.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Button(
+                        onClick = onRequestNotification,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Enable", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
         }
     }
 }

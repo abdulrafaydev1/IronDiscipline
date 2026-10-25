@@ -24,6 +24,7 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
 
     <!-- Auto-restart persistence on reboot & battery exemption -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -105,7 +106,13 @@
         <receiver
             android:name=".alarm.AlarmReceiver"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.irondiscipline.app.alarm.TRIGGER_ALARM" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".alarm.AlarmRingingService"
@@ -116,9 +123,12 @@
         <activity
             android:name=".alarm.AlarmRingingActivity"
             android:exported="false"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:launchMode="singleTask"
+            android:showOnLockScreen="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
             android:theme="@style/Theme.IronDiscipline" />
 
     </application>

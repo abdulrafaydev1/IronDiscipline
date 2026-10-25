@@ -2,6 +2,7 @@ package com.irondiscipline.app.alarm
 
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
@@ -52,7 +53,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,11 +75,11 @@ import com.irondiscipline.app.ui.theme.IronDisciplineTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.random.Random
 
 /**
  * Full-screen Alarm Ringing Activity enforcing strict Hard Math Challenge dismissal.
- * No snooze, locked volume down, keyguard unlock handoff, and dev test dismiss fallback.
+ * Renders directly over the lock screen with screen wake locks, persistent questions state across
+ * screen wake/lock cycles, hardware volume suppression, and official lock-screen unlock handoff.
  */
 class AlarmRingingActivity : ComponentActivity() {
 
@@ -88,27 +88,19 @@ class AlarmRingingActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Wake screen and display directly over lock screen
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        }
-        @Suppress("DEPRECATION")
-        window.addFlags(
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-        )
+        // 1. Wake screen and display directly over lock screen
+        applyScreenAndLockFlags()
 
-        // Prevent bypass via Back button press
+        // 2. Prevent bypass via Back button press
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                // Back button completely disabled
+                // Back button completely disabled until Math Hard is solved
             }
         })
 
         activeAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+        ActiveAlarmSessionState.initSession(activeAlarmId)
+
         val repository = AlarmRepository.getInstance(applicationContext)
         val alarm = if (activeAlarmId != null) repository.getAlarmById(activeAlarmId!!) else null
 
@@ -125,6 +117,31 @@ class AlarmRingingActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyScreenAndLockFlags()
+
+        intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)?.let {
+            activeAlarmId = it
+            ActiveAlarmSessionState.initSession(it)
+        }
+    }
+
+    private fun applyScreenAndLockFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+        )
     }
 
     /**
@@ -148,7 +165,8 @@ class AlarmRingingActivity : ComponentActivity() {
     }
 
     /**
-     * Terminate alarm ringing service, update repository, and hand off to device keyguard unlock.
+     * Terminate alarm ringing service, update repository, release wake locks,
+     * and trigger official Android lock-screen unlock flow.
      */
     private fun completeAlarmAndDismiss(alarmId: String?) {
         val repository = AlarmRepository.getInstance(applicationContext)
@@ -156,6 +174,8 @@ class AlarmRingingActivity : ComponentActivity() {
             repository.handleAlarmDismissed(alarmId)
         }
         AlarmRingingService.stopRinging(this, alarmId)
+        AlarmWakeLockManager.releaseAll()
+        ActiveAlarmSessionState.clearSession()
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && keyguardManager != null && keyguardManager.isKeyguardLocked) {
@@ -181,8 +201,6 @@ class AlarmRingingActivity : ComponentActivity() {
     }
 }
 
-data class MathProblem(val text: String, val answer: Int)
-
 @Composable
 fun AlarmRingingScreen(
     alarm: AlarmItem?,
@@ -207,9 +225,9 @@ fun AlarmRingingScreen(
             prefs.getBoolean("enable_dev_test_dismiss", true)
     }
 
-    // Mandatory Hard Math Challenge State: Solve 3 sequential problems
-    var solvedCount by remember { mutableIntStateOf(0) }
-    var currentProblem by remember { mutableStateOf(generateHardMathProblem()) }
+    // Read persistent math questions and solved count from ActiveAlarmSessionState
+    val solvedCount = ActiveAlarmSessionState.solvedCount
+    val currentProblem = ActiveAlarmSessionState.currentProblem ?: ActiveAlarmSessionState.generateHardMathProblem()
     var userAnswerText by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -229,16 +247,14 @@ fun AlarmRingingScreen(
 
     fun evaluateAnswer() {
         val userVal = userAnswerText.trim().toIntOrNull()
-        if (userVal == currentProblem.answer) {
-            val nextSolved = solvedCount + 1
-            if (nextSolved >= 3) {
-                // Completed all 3 equations -> Dismiss immediately
+        val problem = ActiveAlarmSessionState.currentProblem ?: return
+        if (userVal == problem.answer) {
+            val allDone = ActiveAlarmSessionState.onQuestionSolved()
+            userAnswerText = ""
+            errorMessage = null
+            if (allDone) {
+                // Completed all 3 equations -> Dismiss immediately & trigger unlock
                 onDismissCompleted()
-            } else {
-                solvedCount = nextSolved
-                userAnswerText = ""
-                errorMessage = null
-                currentProblem = generateHardMathProblem()
             }
         } else {
             errorMessage = "❌ Galat Jawab! Dobara solve karein."
@@ -488,18 +504,4 @@ private fun getFormattedCurrentTime(context: Context): String {
     val pattern = if (is24) "HH:mm:ss" else "hh:mm:ss a"
     val sdf = SimpleDateFormat(pattern, Locale.US)
     return sdf.format(Date()).uppercase(Locale.US)
-}
-
-/**
- * Generates challenging multi-digit math equations e.g. (14 × 7) + 39.
- */
-private fun generateHardMathProblem(): MathProblem {
-    val a = Random.nextInt(12, 20) // 12..19
-    val b = Random.nextInt(6, 15)  // 6..14
-    val c = Random.nextInt(18, 65) // 18..64
-    return when (Random.nextInt(0, 3)) {
-        0 -> MathProblem("($a × $b) + $c", (a * b) + c)
-        1 -> MathProblem("($a × $b) - $c", (a * b) - c)
-        else -> MathProblem("$c + ($a × $b)", c + (a * b))
-    }
 }

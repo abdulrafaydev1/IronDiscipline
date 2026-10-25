@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
@@ -219,6 +220,42 @@ fun SettingsScreen(
                 context.startActivity(PermissionHelper.createBatteryOptimizationExemptionIntent(context))
             }
         )
+
+        // Permission Card 5: Exact Alarm Scheduling
+        val isExactAlarmGranted = remember(permissionState) {
+            PermissionHelper.canScheduleExactAlarms(context)
+        }
+        PermissionItemCard(
+            title = "Exact Alarm Scheduling",
+            description = "Allows waking your device precisely at scheduled alarm times even in deep sleep.",
+            icon = Icons.Default.Alarm,
+            isGranted = isExactAlarmGranted,
+            actionLabel = "Grant Exact Alarm Access",
+            onActionClick = {
+                try {
+                    context.startActivity(PermissionHelper.createRequestExactAlarmIntent(context))
+                } catch (_: Exception) {}
+            }
+        )
+
+        // Permission Card 6: Full-Screen Lock Screen Popup (Android 14+)
+        val isFullScreenGranted = remember(permissionState) {
+            PermissionHelper.canUseFullScreenIntent(context)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            PermissionItemCard(
+                title = "Full-Screen Lock Intent",
+                description = "Required on Android 14+ to display the Math Hard alarm directly over your locked screen.",
+                icon = Icons.Default.Shield,
+                isGranted = isFullScreenGranted,
+                actionLabel = "Authorize Lock Screen Popup",
+                onActionClick = {
+                    try {
+                        context.startActivity(PermissionHelper.createManageFullScreenIntent(context))
+                    } catch (_: Exception) {}
+                }
+            )
+        }
 
         // Refresh Permissions Button
         OutlinedButton(

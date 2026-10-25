@@ -22,6 +22,9 @@ class AlarmScheduler(private val context: Context) {
         const val ACTION_DISMISS_ALARM = "com.irondiscipline.app.alarm.DISMISS_ALARM"
 
         const val EXTRA_ALARM_ID = "extra_alarm_id"
+        const val EXTRA_ALARM_LABEL = "extra_alarm_label"
+        const val EXTRA_SOUND_INDEX = "extra_sound_index"
+        const val EXTRA_DELETE_AFTER_RINGING = "extra_delete_after_ringing"
 
         @Volatile
         private var instance: AlarmScheduler? = null
@@ -48,6 +51,9 @@ class AlarmScheduler(private val context: Context) {
         val triggerIntent = Intent(context, AlarmReceiver::class.java).apply {
             action = ACTION_TRIGGER_ALARM
             putExtra(EXTRA_ALARM_ID, alarm.id)
+            putExtra(EXTRA_ALARM_LABEL, alarm.label)
+            putExtra(EXTRA_SOUND_INDEX, alarm.soundIndex)
+            putExtra(EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
         }
 
         val pendingIntent = PendingIntent.getBroadcast(
