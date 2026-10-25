@@ -128,16 +128,21 @@ object PermissionHelper {
     }
 
     fun canUseFullScreenIntent(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= 34) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            nm?.canUseFullScreenIntent() ?: true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                val method = nm?.javaClass?.getMethod("canUseFullScreenIntent")
+                (method?.invoke(nm) as? Boolean) ?: true
+            } catch (_: Throwable) {
+                true
+            }
         } else {
             true
         }
     }
 
     fun createManageFullScreenIntent(context: Context): Intent {
-        return if (Build.VERSION.SDK_INT >= 34) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT").apply {
                 data = Uri.parse("package:${context.packageName}")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
