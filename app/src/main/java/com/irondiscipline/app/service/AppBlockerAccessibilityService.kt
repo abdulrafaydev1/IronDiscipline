@@ -123,6 +123,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        // 0. Emergency / Authorized App Uninstall: stand down protection and disable service
+        if (prefs.getBoolean("is_uninstall_authorized", false)) {
+            disarmAndDisable()
+            return
+        }
+
         // 3. Anti-Cheat: Block Calculator if wake-up alarm is ringing
         if (prefs.getBoolean("is_alarm_currently_ringing", false)) {
             if (CALCULATOR_PACKAGES.contains(rawPkg) || rawPkg.contains("calc", ignoreCase = true)) {
@@ -186,6 +192,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
      */
     private fun tickOneSecond() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        // Emergency / Authorized App Uninstall: stand down protection and disable service
+        if (prefs.getBoolean("is_uninstall_authorized", false)) {
+            disarmAndDisable()
+            return
+        }
 
         // Date rollover check for unlocked apps
         checkMidnightDateRollover(prefs)
@@ -717,6 +729,17 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Emergency / Authorized Disarm:
+     * Cleans up all overlays, audio muting, ticker callbacks, and shuts down the AccessibilityService.
+     */
+    fun disarmAndDisable() {
+        hideNativeBlockOverlay()
+        restoreAudioCleanly()
+        mainHandler.removeCallbacks(tickerRunnable)
+        disableSelf()
+    }
+
     private fun dp(value: Int): Int {
         return TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP,
@@ -820,6 +843,29 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             val service = instance ?: return
             Handler(Looper.getMainLooper()).post {
                 service.hideNativeBlockOverlay()
+            }
+        }
+
+        /**
+         * Disarms anti-tamper protections, resets 5-hour locks for YouTube, Facebook,
+         * Instagram, and TikTok, and shuts down the AccessibilityService so Android's
+         * package uninstaller dialog is completely unobstructed.
+         */
+        fun disarmAndDisableServiceForUninstall(context: Context) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val editor = prefs.edit().putBoolean("is_uninstall_authorized", true)
+            val coreKeys = listOf("youtube", "facebook", "instagram", "tiktok")
+            for (key in coreKeys) {
+                editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
+                editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
+            }
+            editor.commit()
+
+            val service = instance
+            if (service != null) {
+                Handler(Looper.getMainLooper()).post {
+                    service.disarmAndDisable()
+                }
             }
         }
 

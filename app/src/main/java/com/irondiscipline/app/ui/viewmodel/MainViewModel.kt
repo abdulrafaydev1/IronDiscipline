@@ -449,4 +449,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         postBannerMessage("Logged $completedMinutes mins of Deep Work! Discipline grows stronger.")
     }
+
+    // --- PIN Management & Emergency App Deletion ---
+    fun getUninstallPin(): String {
+        val prefs = context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        return prefs.getString("uninstall_pin", "1234") ?: "1234"
+    }
+
+    fun verifyUninstallPin(enteredPin: String): Boolean {
+        return enteredPin.trim() == getUninstallPin().trim()
+    }
+
+    fun updateUninstallPin(currentPin: String, newPin: String): Boolean {
+        if (!verifyUninstallPin(currentPin)) {
+            postBannerMessage("Incorrect Current PIN.")
+            return false
+        }
+        val cleanNewPin = newPin.trim()
+        if (cleanNewPin.length < 4) {
+            postBannerMessage("New PIN must be at least 4 digits.")
+            return false
+        }
+        val prefs = context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putString("uninstall_pin", cleanNewPin).apply()
+        postBannerMessage("Security PIN updated successfully.")
+        return true
+    }
+
+    fun executeAuthorizedUninstall() {
+        AppBlockerAccessibilityService.disarmAndDisableServiceForUninstall(context)
+        realtimeQuotaManager.publishSnapshot()
+
+        try {
+            val packageUri = android.net.Uri.parse("package:${context.packageName}")
+            val uninstallIntent = android.content.Intent(android.content.Intent.ACTION_DELETE, packageUri).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(uninstallIntent)
+        } catch (e: Exception) {
+            postBannerMessage("Failed to launch uninstaller: ${e.message}")
+        }
+    }
 }

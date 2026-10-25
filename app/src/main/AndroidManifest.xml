@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Explicit permission to trigger Android system uninstaller (API 26+) -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
     <!-- Usage Stats for accurate screen-time & daily quota tracking -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"

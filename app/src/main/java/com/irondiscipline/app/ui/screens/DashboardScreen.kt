@@ -34,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
@@ -48,6 +49,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -62,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.domain.model.PermissionStatusState
+import com.irondiscipline.app.ui.components.UninstallPinDialog
 import com.irondiscipline.app.util.CoreAppQuotaStatus
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.PermissionHelper
@@ -97,11 +102,25 @@ fun DashboardScreen(
     permissionState: PermissionStatusState,
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit,
-    onRefreshPermissions: () -> Unit = {}
+    onRefreshPermissions: () -> Unit = {},
+    onVerifyPin: (String) -> Boolean = { true },
+    onConfirmUninstall: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val isTestMode = realtimeQuotaState.isTestModeActive
+    var showUninstallPinDialog by remember { mutableStateOf(false) }
+
+    if (showUninstallPinDialog) {
+        UninstallPinDialog(
+            onDismiss = { showUninstallPinDialog = false },
+            onVerifyPin = onVerifyPin,
+            onConfirmUninstall = {
+                showUninstallPinDialog = false
+                onConfirmUninstall()
+            }
+        )
+    }
 
     // Calculate aggregated daily statistics for the Hero Gauge
     val totalLimitSeconds = realtimeQuotaState.coreStatuses.sumOf { it.limitSeconds }.coerceAtLeast(1)
@@ -146,12 +165,13 @@ fun DashboardScreen(
             )
         }
 
-        // 4. Tactical Control Capsule (Auto-Resets on Toggle)
+        // 4. Tactical Control Capsule (Auto-Resets on Toggle + Emergency Delete App)
         TacticalControlCapsule(
             isTestMode = isTestMode,
             isAnyAppLocked = realtimeQuotaState.anyAppLocked,
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
-            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode
+            onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode,
+            onDeleteAppClick = { showUninstallPinDialog = true }
         )
 
         // 5. Section Header
@@ -570,7 +590,8 @@ private fun TacticalControlCapsule(
     isTestMode: Boolean,
     isAnyAppLocked: Boolean,
     onActivateOneMinuteTestMode: () -> Unit,
-    onSwitchBackToNormalThirtyMinMode: () -> Unit
+    onSwitchBackToNormalThirtyMinMode: () -> Unit,
+    onDeleteAppClick: () -> Unit
 ) {
     val modeAccentColor by animateColorAsState(
         targetValue = when {
@@ -689,6 +710,38 @@ private fun TacticalControlCapsule(
                     },
                     fontWeight = FontWeight.Black,
                     fontSize = 12.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Sleek Crimson-Outlined Dark Metallic Uninstall Button (Always 100% Active & Clickable)
+            Button(
+                onClick = onDeleteAppClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF200F15),
+                    contentColor = ColorCrimsonNeon
+                ),
+                border = BorderStroke(
+                    width = 1.2.dp,
+                    color = ColorCrimsonNeon.copy(alpha = 0.85f)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "🗑️ Delete App (Enter PIN)",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.4.sp
                 )
             }
         }

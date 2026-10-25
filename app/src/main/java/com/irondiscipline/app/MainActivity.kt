@@ -212,14 +212,19 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                     permissionState = permissionState,
                     onActivateOneMinuteTestMode = viewModel::activateOneMinuteTestMode,
                     onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
-                    onRefreshPermissions = viewModel::refreshPermissionsAndApps
+                    onRefreshPermissions = viewModel::refreshPermissionsAndApps,
+                    onVerifyPin = viewModel::verifyUninstallPin,
+                    onConfirmUninstall = viewModel::executeAuthorizedUninstall
                 )
                 1 -> AlarmScreen(
                     alarmRepository = alarmRepository
                 )
                 2 -> SettingsScreen(
                     permissionState = permissionState,
-                    onRefreshPermissions = viewModel::refreshPermissionsAndApps
+                    onRefreshPermissions = viewModel::refreshPermissionsAndApps,
+                    onVerifyPin = viewModel::verifyUninstallPin,
+                    onConfirmUninstall = viewModel::executeAuthorizedUninstall,
+                    onChangePin = viewModel::updateUninstallPin
                 )
             }
         }

@@ -23,7 +23,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
@@ -38,6 +40,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +56,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.domain.model.PermissionStatusState
+import com.irondiscipline.app.ui.components.ChangeSecurityPinDialog
+import com.irondiscipline.app.ui.components.UninstallPinDialog
 import com.irondiscipline.app.util.PermissionHelper
 
 // Obsidian Palette
@@ -71,10 +79,34 @@ private val ColorTextMuted = Color(0xFF5E6D82)
 @Composable
 fun SettingsScreen(
     permissionState: PermissionStatusState,
-    onRefreshPermissions: () -> Unit
+    onRefreshPermissions: () -> Unit,
+    onVerifyPin: (String) -> Boolean = { true },
+    onConfirmUninstall: () -> Unit = {},
+    onChangePin: (String, String) -> Boolean = { _, _ -> true }
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    var showUninstallPinDialog by remember { mutableStateOf(false) }
+    var showChangePinDialog by remember { mutableStateOf(false) }
+
+    if (showUninstallPinDialog) {
+        UninstallPinDialog(
+            onDismiss = { showUninstallPinDialog = false },
+            onVerifyPin = onVerifyPin,
+            onConfirmUninstall = {
+                showUninstallPinDialog = false
+                onConfirmUninstall()
+            }
+        )
+    }
+
+    if (showChangePinDialog) {
+        ChangeSecurityPinDialog(
+            onDismiss = { showChangePinDialog = false },
+            onVerifyCurrentPin = onVerifyPin,
+            onSaveNewPin = onChangePin
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -288,6 +320,106 @@ fun SettingsScreen(
                             fontFamily = FontFamily.Monospace
                         )
                     }
+                }
+            }
+        }
+
+        // 4. Emergency & Testing Controls Card (PIN Protected Uninstall & Security PIN Management)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    BorderStroke(
+                        1.2.dp,
+                        Brush.linearGradient(
+                            listOf(Color(0xFFFF2E54).copy(alpha = 0.5f), ColorCardBorderEnd)
+                        )
+                    ),
+                    RoundedCornerShape(20.dp)
+                ),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = ColorElevatedSlate)
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.WarningAmber,
+                        contentDescription = null,
+                        tint = Color(0xFFFF2E54),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "EMERGENCY & TESTING CONTROLS",
+                        color = ColorTextPrimary,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 13.sp,
+                        letterSpacing = 1.0.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "PIN-guarded controls to disarm protection protocols or cleanly remove the application during development and testing.",
+                    color = ColorTextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Delete / Uninstall App Button
+                Button(
+                    onClick = { showUninstallPinDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF220D14),
+                        contentColor = Color(0xFFFF2E54)
+                    ),
+                    border = BorderStroke(1.2.dp, Color(0xFFFF2E54).copy(alpha = 0.85f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "🗑️ Delete / Uninstall App (PIN Required)",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Change Security PIN Button
+                OutlinedButton(
+                    onClick = { showChangePinDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    border = BorderStroke(1.dp, ColorSkyBlue.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = ColorSkyBlue
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LockReset,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "🔐 Change Security PIN (Default: 1234)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
                 }
             }
         }
