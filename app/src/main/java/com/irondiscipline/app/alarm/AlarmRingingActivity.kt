@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.BuildConfig
+import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.ui.theme.IronDisciplineTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -442,7 +443,8 @@ fun AlarmRingingScreen(
                         onClick = { evaluateAnswer() },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp),
+                            .height(48.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFFFFB300),
@@ -495,7 +497,8 @@ fun AlarmRingingScreen(
                     onClick = onDevTestDismiss,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .height(48.dp)
+                        .jellyElastic(baseCornerRadius = 14.dp),
                     shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.dp, Color(0xFFFF9100)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9100))

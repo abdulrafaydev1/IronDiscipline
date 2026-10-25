@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.ui.components.UninstallPinDialog
+import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.util.CoreAppQuotaStatus
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.PermissionHelper
@@ -508,7 +509,9 @@ private fun SleekPermissionAlertCard(
                         onClick = {
                             context.startActivity(PermissionHelper.createAccessibilitySettingsIntent())
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ColorCyberAmber,
@@ -535,7 +538,9 @@ private fun SleekPermissionAlertCard(
                         onClick = {
                             context.startActivity(PermissionHelper.createOverlayPermissionIntent(context))
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF00F5D4),
@@ -559,7 +564,9 @@ private fun SleekPermissionAlertCard(
 
                 OutlinedButton(
                     onClick = onRefreshPermissions,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .jellyElastic(baseCornerRadius = 12.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFF3B4860))
                 ) {
@@ -667,7 +674,8 @@ private fun TacticalControlCapsule(
                 enabled = !isAnyAppLocked,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp),
+                    .height(48.dp)
+                    .jellyElastic(enabled = !isAnyAppLocked, baseCornerRadius = 13.dp),
                 shape = RoundedCornerShape(13.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = when {
@@ -720,7 +728,8 @@ private fun TacticalControlCapsule(
                 onClick = onDeleteAppClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp),
+                    .height(46.dp)
+                    .jellyElastic(enabled = true, baseCornerRadius = 13.dp),
                 shape = RoundedCornerShape(13.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF200F15),

@@ -176,7 +176,8 @@ fun UninstallPinDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .weight(1f)
-                            .height(46.dp),
+                            .height(46.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, ColorCardBorder),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -200,7 +201,8 @@ fun UninstallPinDialog(
                         },
                         modifier = Modifier
                             .weight(1.3f)
-                            .height(46.dp),
+                            .height(46.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ColorCrimsonNeon,
@@ -355,7 +357,8 @@ fun ChangeSecurityPinDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp),
+                            .height(44.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, ColorCardBorder)
                     ) {
@@ -385,7 +388,8 @@ fun ChangeSecurityPinDialog(
                         },
                         modifier = Modifier
                             .weight(1.2f)
-                            .height(44.dp),
+                            .height(44.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ColorSkyBlue,

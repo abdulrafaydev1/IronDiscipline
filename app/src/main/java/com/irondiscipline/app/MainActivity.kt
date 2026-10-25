@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.irondiscipline.app.alarm.AlarmRepository
+import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.ui.screens.AlarmScreen
 import com.irondiscipline.app.ui.screens.DashboardScreen
 import com.irondiscipline.app.ui.screens.SettingsScreen
@@ -119,6 +120,7 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
             ) {
                 // Tab 1: Dashboard
                 NavigationBarItem(
+                    modifier = Modifier.jellyElastic(enabled = true, baseCornerRadius = 24.dp, maxTranslationDp = 16.dp, maxStretchScale = 0.25f),
                     selected = selectedTabIndex == 0,
                     onClick = { selectedTabIndex = 0 },
                     icon = {
@@ -145,6 +147,7 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
 
                 // Tab 2: Alarm (Center Tab)
                 NavigationBarItem(
+                    modifier = Modifier.jellyElastic(enabled = true, baseCornerRadius = 24.dp, maxTranslationDp = 16.dp, maxStretchScale = 0.25f),
                     selected = selectedTabIndex == 1,
                     onClick = { selectedTabIndex = 1 },
                     icon = {
@@ -171,6 +174,7 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
 
                 // Tab 3: Settings
                 NavigationBarItem(
+                    modifier = Modifier.jellyElastic(enabled = true, baseCornerRadius = 24.dp, maxTranslationDp = 16.dp, maxStretchScale = 0.25f),
                     selected = selectedTabIndex == 2,
                     onClick = { selectedTabIndex = 2 },
                     icon = {

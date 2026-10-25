@@ -82,6 +82,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.irondiscipline.app.alarm.AlarmItem
 import com.irondiscipline.app.alarm.AlarmRepository
 import com.irondiscipline.app.alarm.HardAlarmSoundEngine
+import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.util.PermissionHelper
 import kotlinx.coroutines.delay
 import java.util.Calendar
@@ -249,6 +250,7 @@ fun AlarmScreen(
                         ),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                         modifier = Modifier
+                            .jellyElastic(baseCornerRadius = 20.dp)
                             .clip(RoundedCornerShape(20.dp))
                             .background(
                                 Brush.horizontalGradient(
@@ -381,6 +383,7 @@ fun AlarmPermissionsBanner(
                     }
                     Button(
                         onClick = onRequestExactAlarm,
+                        modifier = Modifier.jellyElastic(baseCornerRadius = 8.dp),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
@@ -411,6 +414,7 @@ fun AlarmPermissionsBanner(
                     }
                     Button(
                         onClick = onRequestFullScreen,
+                        modifier = Modifier.jellyElastic(baseCornerRadius = 8.dp),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
@@ -441,6 +445,7 @@ fun AlarmPermissionsBanner(
                     }
                     Button(
                         onClick = onRequestNotification,
+                        modifier = Modifier.jellyElastic(baseCornerRadius = 8.dp),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
@@ -623,7 +628,9 @@ fun AlarmItemCard(
 
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(32.dp)
+                            .jellyElastic(baseCornerRadius = 16.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Delete,
@@ -832,6 +839,7 @@ fun EmptyAlarmsCard(onSetAlarm: () -> Unit) {
             Spacer(modifier = Modifier.height(20.dp))
             Button(
                 onClick = onSetAlarm,
+                modifier = Modifier.jellyElastic(baseCornerRadius = 12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFFFF2E54)
                 ),
@@ -1036,7 +1044,9 @@ fun CreateAlarmDialog(
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .jellyElastic(baseCornerRadius = 12.dp)
                     ) {
                         Text("Cancel", color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
                     }
@@ -1073,7 +1083,9 @@ fun CreateAlarmDialog(
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(2f)
+                        modifier = Modifier
+                            .weight(2f)
+                            .jellyElastic(baseCornerRadius = 12.dp)
                     ) {
                         Text("SAVE DISCIPLINE ALARM", color = Color.White, fontWeight = FontWeight.Black)
                     }
@@ -1144,7 +1156,9 @@ fun TimePickerCard(
                                 onHour12Change(next)
                             }
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(32.dp)
+                            .jellyElastic(baseCornerRadius = 16.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropUp, contentDescription = null, tint = Color(0xFF00E676))
                     }
@@ -1165,7 +1179,9 @@ fun TimePickerCard(
                                 onHour12Change(prev)
                             }
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(32.dp)
+                            .jellyElastic(baseCornerRadius = 16.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color(0xFF00E676))
                     }
@@ -1186,7 +1202,9 @@ fun TimePickerCard(
                             val next = (minute + 1) % 60
                             onMinuteChange(next)
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(32.dp)
+                            .jellyElastic(baseCornerRadius = 16.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropUp, contentDescription = null, tint = Color(0xFF00E676))
                     }
@@ -1202,7 +1220,9 @@ fun TimePickerCard(
                             val prev = if (minute == 0) 59 else minute - 1
                             onMinuteChange(prev)
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(32.dp)
+                            .jellyElastic(baseCornerRadius = 16.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color(0xFF00E676))
                     }
@@ -1214,6 +1234,7 @@ fun TimePickerCard(
                     // AM / PM Toggle Pill
                     Box(
                         modifier = Modifier
+                            .jellyElastic(baseCornerRadius = 12.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF1E293B))
                             .clickable { onAmPmToggle() }
@@ -1319,6 +1340,7 @@ fun RepeatDaysSelector(
                     Box(
                         modifier = Modifier
                             .size(38.dp)
+                            .jellyElastic(baseCornerRadius = 10.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(if (isSelected) Color(0xFF00E676) else Color(0xFF1E293B))
                             .clickable { onToggleDay(dayInt) },
@@ -1489,6 +1511,7 @@ fun SoundSelectorCard(
                     // Preview Button
                     Button(
                         onClick = { onTogglePreview(index) },
+                        modifier = Modifier.jellyElastic(baseCornerRadius = 8.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isPlaying) Color(0xFFFF2E54) else Color(0xFF1E293B)
                         ),

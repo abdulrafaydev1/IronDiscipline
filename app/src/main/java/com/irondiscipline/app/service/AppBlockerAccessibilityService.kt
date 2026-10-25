@@ -20,7 +20,9 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
+import android.view.animation.OvershootInterpolator
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -32,6 +34,8 @@ import com.irondiscipline.app.IronDisciplineApp
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.RealtimeQuotaManager
 import java.time.LocalDate
+import kotlin.math.abs
+import kotlin.math.tanh
 
 class AppBlockerAccessibilityService : AccessibilityService() {
 
@@ -933,6 +937,67 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
                 // 3. Remove the overlay and restore audio cleanly
                 hideBlockOverlay()
+            }
+
+            // Rubber Jelly elastic stretch physics on hold & drag
+            var downX = 0f
+            var downY = 0f
+            var isDragging = false
+            val touchSlop = dp(8).toFloat()
+            val maxDragPx = dp(32).toFloat()
+            val dragResistance = dp(95).toFloat()
+
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.rawX
+                        downY = event.rawY
+                        isDragging = false
+                        v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX - downX
+                        val dy = event.rawY - downY
+                        if (!isDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                            isDragging = true
+                        }
+                        if (isDragging) {
+                            val normX = tanh(dx / dragResistance)
+                            val normY = tanh(dy / dragResistance)
+                            val transX = normX * maxDragPx
+                            val transY = normY * maxDragPx
+                            val scaleX = (1f + (abs(normX) * 0.35f) - (abs(normY) * 0.08f)).coerceIn(0.88f, 1.4f)
+                            val scaleY = (1f + (abs(normY) * 0.35f) - (abs(normX) * 0.08f)).coerceIn(0.88f, 1.4f)
+                            v.translationX = transX
+                            v.translationY = transY
+                            v.scaleX = scaleX
+                            v.scaleY = scaleY
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (isDragging) {
+                            v.animate()
+                                .translationX(0f)
+                                .translationY(0f)
+                                .scaleX(1f)
+                                .scaleY(1f)
+                                .setDuration(380)
+                                .setInterpolator(OvershootInterpolator(2.0f))
+                                .start()
+                            isDragging = false
+                            true
+                        } else {
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                            v.performClick()
+                            true
+                        }
+                    }
+                    else -> false
+                }
             }
         }
         cardContainer.addView(exitHomeButton, LinearLayout.LayoutParams(

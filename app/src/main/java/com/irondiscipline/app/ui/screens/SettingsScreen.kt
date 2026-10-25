@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.ui.components.ChangeSecurityPinDialog
 import com.irondiscipline.app.ui.components.UninstallPinDialog
+import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.util.PermissionHelper
 
 // Obsidian Palette
@@ -260,7 +261,10 @@ fun SettingsScreen(
         // Refresh Permissions Button
         OutlinedButton(
             onClick = onRefreshPermissions,
-            modifier = Modifier.fillMaxWidth().height(46.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp)
+                .jellyElastic(baseCornerRadius = 13.dp),
             shape = RoundedCornerShape(13.dp),
             border = BorderStroke(1.dp, Color(0xFF26334D))
         ) {
@@ -418,7 +422,8 @@ fun SettingsScreen(
                     onClick = { showUninstallPinDialog = true },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .height(48.dp)
+                        .jellyElastic(baseCornerRadius = 13.dp),
                     shape = RoundedCornerShape(13.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF220D14),
@@ -446,7 +451,8 @@ fun SettingsScreen(
                     onClick = { showChangePinDialog = true },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .height(44.dp)
+                        .jellyElastic(baseCornerRadius = 13.dp),
                     shape = RoundedCornerShape(13.dp),
                     border = BorderStroke(1.dp, ColorSkyBlue.copy(alpha = 0.6f)),
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -615,7 +621,10 @@ private fun PermissionItemCard(
             if (!isGranted) {
                 Button(
                     onClick = onActionClick,
-                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                        .jellyElastic(baseCornerRadius = 11.dp),
                     shape = RoundedCornerShape(11.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ColorCyberAmber,
