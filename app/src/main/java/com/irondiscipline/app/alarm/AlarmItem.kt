@@ -19,21 +19,24 @@ data class AlarmItem(
     val repeatDays: Set<Int> = emptySet(), // Calendar.MONDAY (2) .. Calendar.SUNDAY (1)
     val deleteAfterRinging: Boolean = false,
     val soundIndex: Int = 0,
-    val snoozeEnabled: Boolean = true,
-    val snoozeMinutes: Int = 10,
-    val vibrateWhileRinging: Boolean = true,
-    val dismissChallenge: String = "NONE", // "NONE", "MATH_EASY", "MATH_HARD"
-    val maxVolumeOverride: Boolean = true
+    val snoozeEnabled: Boolean = false, // Forced NO
+    val snoozeMinutes: Int = 0, // Forced 0
+    val vibrateWhileRinging: Boolean = true, // Forced ON
+    val dismissChallenge: String = "MATH_HARD", // Forced MATH_HARD
+    val maxVolumeOverride: Boolean = true // Forced ON
 ) {
-    val formattedTime: String
-        get() {
-            val cal = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, hour)
-                set(Calendar.MINUTE, minute)
-            }
-            val format = SimpleDateFormat("hh:mm a", Locale.US)
-            return format.format(cal.time).uppercase(Locale.US)
+    fun getFormattedTime(is24Hour: Boolean = false): String {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
         }
+        val pattern = if (is24Hour) "HH:mm" else "hh:mm a"
+        val format = SimpleDateFormat(pattern, Locale.US)
+        return format.format(cal.time).uppercase(Locale.US)
+    }
+
+    val formattedTime: String
+        get() = getFormattedTime(false)
 
     val isRepeating: Boolean
         get() = repeatDays.isNotEmpty()
@@ -103,11 +106,11 @@ data class AlarmItem(
                 repeatDays = daysSet,
                 deleteAfterRinging = json.optBoolean("deleteAfterRinging", false),
                 soundIndex = json.optInt("soundIndex", 0),
-                snoozeEnabled = json.optBoolean("snoozeEnabled", true),
-                snoozeMinutes = json.optInt("snoozeMinutes", 10),
-                vibrateWhileRinging = json.optBoolean("vibrateWhileRinging", true),
-                dismissChallenge = json.optString("dismissChallenge", "NONE"),
-                maxVolumeOverride = json.optBoolean("maxVolumeOverride", true)
+                snoozeEnabled = false,
+                snoozeMinutes = 0,
+                vibrateWhileRinging = true,
+                dismissChallenge = "MATH_HARD",
+                maxVolumeOverride = true
             )
         }
     }

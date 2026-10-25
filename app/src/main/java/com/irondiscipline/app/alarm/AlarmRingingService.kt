@@ -19,6 +19,12 @@ import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.irondiscipline.app.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Foreground Service that plays the synthesized PCM hard alarm sound and drives heavy vibration.
@@ -26,6 +32,8 @@ import com.irondiscipline.app.R
  */
 class AlarmRingingService : Service() {
 
+    private val serviceScope = CoroutineScope(Dispatchers.Default)
+    private var volumeGuardJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
     private val soundEngine = HardAlarmSoundEngine.getInstance()
@@ -34,7 +42,7 @@ class AlarmRingingService : Service() {
         const val CHANNEL_ID = "iron_discipline_hard_alarm_channel"
         const val NOTIFICATION_ID = 2026
 
-        fun stopRinging(context: Context) {
+        fun stopRinging(context: Context, alarmId: String? = null) {
             val intent = Intent(context, AlarmRingingService::class.java)
             context.stopService(intent)
         }
@@ -82,15 +90,21 @@ class AlarmRingingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // 1. Max Volume Override (if enabled)
-        if (alarm?.maxVolumeOverride != false) {
-            try {
-                val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                am?.let {
-                    val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                    it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
-                }
-            } catch (_: Exception) {}
+        // 1. Max Volume Override & 1-Second Periodic Volume Guard
+        volumeGuardJob?.cancel()
+        volumeGuardJob = serviceScope.launch {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            while (isActive) {
+                try {
+                    am?.let {
+                        val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                        if (it.getStreamVolume(AudioManager.STREAM_ALARM) < maxVol) {
+                            it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+                        }
+                    }
+                } catch (_: Exception) {}
+                delay(1000L)
+            }
         }
 
         // 2. Play Selected High-Decibel Hard Sound
@@ -154,19 +168,9 @@ class AlarmRingingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Dismiss Intent
-        val dismissIntent = Intent(this, AlarmReceiver::class.java).apply {
-            action = AlarmScheduler.ACTION_DISMISS_ALARM
-            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
-        }
-        val dismissPendingIntent = PendingIntent.getBroadcast(
-            this,
-            (alarmId?.hashCode() ?: 102) + 1,
-            dismissIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        // Math Hard is mandatory: Notification only opens AlarmRingingActivity.
+        // No direct dismiss or snooze action buttons allowed.
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
             .setContentText(label)
@@ -176,27 +180,11 @@ class AlarmRingingService : Service() {
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
             .setFullScreenIntent(fullScreenPendingIntent, true)
-            .addAction(R.drawable.ic_launcher_foreground, "DISMISS", dismissPendingIntent)
-
-        // Snooze Action (if enabled and no math mission lock)
-        if (alarm?.snoozeEnabled == true && alarm.dismissChallenge == "NONE") {
-            val snoozeIntent = Intent(this, AlarmReceiver::class.java).apply {
-                action = AlarmScheduler.ACTION_SNOOZE_ALARM
-                putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
-            }
-            val snoozePendingIntent = PendingIntent.getBroadcast(
-                this,
-                (alarmId.hashCode()) + 2,
-                snoozeIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            builder.addAction(R.drawable.ic_launcher_foreground, "SNOOZE (${alarm.snoozeMinutes}M)", snoozePendingIntent)
-        }
-
-        return builder.build()
+            .build()
     }
 
     override fun onDestroy() {
+        volumeGuardJob?.cancel()
         soundEngine.stopSound()
 
         try {

@@ -1,5 +1,6 @@
 package com.irondiscipline.app.ui.screens
 
+import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDropUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
@@ -65,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -290,8 +293,9 @@ fun NextAlarmHeroBanner(
                     }
 
                     if (nextAlarm != null) {
+                        val is24Hour = DateFormat.is24HourFormat(LocalContext.current)
                         Text(
-                            text = nextAlarm.formattedTime,
+                            text = nextAlarm.getFormattedTime(is24Hour),
                             color = Color(0xFFFFB300),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
@@ -378,9 +382,10 @@ fun AlarmItemCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val is24Hour = DateFormat.is24HourFormat(LocalContext.current)
                 Column {
                     Text(
-                        text = alarm.formattedTime,
+                        text = alarm.getFormattedTime(is24Hour),
                         color = if (alarm.isEnabled) Color.White else Color(0xFF64748B),
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Black,
@@ -644,19 +649,29 @@ fun CreateAlarmDialog(
     onDismiss: () -> Unit,
     onSave: (AlarmItem) -> Unit
 ) {
-    var hour12 by remember { mutableIntStateOf(6) } // 1..12
-    var minute by remember { mutableIntStateOf(0) } // 0..59
-    var isPm by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val is24Hour = remember { DateFormat.is24HourFormat(context) }
+    val now = remember { Calendar.getInstance() }
+    val initialHour24 = remember { now.get(Calendar.HOUR_OF_DAY) }
+    val initialMinute = remember { now.get(Calendar.MINUTE) }
+
+    var hour12 by remember {
+        mutableIntStateOf(
+            when {
+                initialHour24 == 0 -> 12
+                initialHour24 > 12 -> initialHour24 - 12
+                else -> initialHour24
+            }
+        )
+    }
+    var hour24 by remember { mutableIntStateOf(initialHour24) }
+    var minute by remember { mutableIntStateOf(initialMinute) }
+    var isPm by remember { mutableStateOf(initialHour24 >= 12) }
 
     var label by remember { mutableStateOf("Hard Discipline Wake-Up") }
     var repeatDays by remember { mutableStateOf(setOf<Int>()) }
     var deleteAfterRinging by remember { mutableStateOf(false) }
     var selectedSoundIndex by remember { mutableIntStateOf(0) }
-    var snoozeEnabled by remember { mutableStateOf(true) }
-    var snoozeMinutes by remember { mutableIntStateOf(10) }
-    var vibrateWhileRinging by remember { mutableStateOf(true) }
-    var dismissChallenge by remember { mutableStateOf("NONE") } // "NONE", "MATH_EASY", "MATH_HARD"
-    var maxVolumeOverride by remember { mutableStateOf(true) }
 
     var previewingSoundIndex by remember { mutableStateOf<Int?>(null) }
 
@@ -726,12 +741,15 @@ fun CreateAlarmDialog(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // 1. Time Selector (Hour, Minute, AM/PM)
+                    // 1. Time Selector (Hour, Minute, AM/PM initialized with current time and system 12h/24h format)
                     TimePickerCard(
+                        is24Hour = is24Hour,
                         hour12 = hour12,
+                        hour24 = hour24,
                         minute = minute,
                         isPm = isPm,
-                        onHourChange = { hour12 = it },
+                        onHour12Change = { hour12 = it },
+                        onHour24Change = { hour24 = it },
                         onMinuteChange = { minute = it },
                         onAmPmToggle = { isPm = !isPm }
                     )
@@ -769,11 +787,8 @@ fun CreateAlarmDialog(
                         }
                     )
 
-                    // 4. Brain Mission Selector (Standard / Math Easy / Math Hard)
-                    BrainMissionSelector(
-                        selectedChallenge = dismissChallenge,
-                        onSelectChallenge = { dismissChallenge = it }
-                    )
+                    // 4. Brain Mission Enforced: Math Hard (3 Multi-Digit Equations Mandatory)
+                    BrainMissionEnforcedCard()
 
                     // 5. 12 Hard Synthesized Alarm Sounds with Preview
                     SoundSelectorCard(
@@ -793,18 +808,10 @@ fun CreateAlarmDialog(
                         }
                     )
 
-                    // 6. Discipline Controls & Toggles
+                    // 6. Discipline Controls & Locked Toggles
                     DisciplineTogglesCard(
                         deleteAfterRinging = deleteAfterRinging,
-                        onToggleDeleteAfter = { deleteAfterRinging = it },
-                        vibrateWhileRinging = vibrateWhileRinging,
-                        onToggleVibrate = { vibrateWhileRinging = it },
-                        snoozeEnabled = snoozeEnabled,
-                        onToggleSnooze = { snoozeEnabled = it },
-                        snoozeMinutes = snoozeMinutes,
-                        onSelectSnoozeMinutes = { snoozeMinutes = it },
-                        maxVolumeOverride = maxVolumeOverride,
-                        onToggleMaxVolume = { maxVolumeOverride = it }
+                        onToggleDeleteAfter = { deleteAfterRinging = it }
                     )
                 }
 
@@ -831,10 +838,14 @@ fun CreateAlarmDialog(
                         onClick = {
                             HardAlarmSoundEngine.getInstance().stopSound()
                             // Calculate 24-hour hour
-                            val calculated24Hour = when {
-                                isPm && hour12 < 12 -> hour12 + 12
-                                !isPm && hour12 == 12 -> 0
-                                else -> hour12
+                            val calculated24Hour = if (is24Hour) {
+                                hour24
+                            } else {
+                                when {
+                                    isPm && hour12 < 12 -> hour12 + 12
+                                    !isPm && hour12 == 12 -> 0
+                                    else -> hour12
+                                }
                             }
 
                             val item = AlarmItem(
@@ -845,11 +856,11 @@ fun CreateAlarmDialog(
                                 repeatDays = repeatDays,
                                 deleteAfterRinging = deleteAfterRinging,
                                 soundIndex = selectedSoundIndex,
-                                snoozeEnabled = snoozeEnabled,
-                                snoozeMinutes = snoozeMinutes,
-                                vibrateWhileRinging = vibrateWhileRinging,
-                                dismissChallenge = dismissChallenge,
-                                maxVolumeOverride = maxVolumeOverride
+                                snoozeEnabled = false,
+                                snoozeMinutes = 0,
+                                vibrateWhileRinging = true,
+                                dismissChallenge = "MATH_HARD",
+                                maxVolumeOverride = true
                             )
                             onSave(item)
                         },
@@ -867,10 +878,13 @@ fun CreateAlarmDialog(
 
 @Composable
 fun TimePickerCard(
+    is24Hour: Boolean,
     hour12: Int,
+    hour24: Int,
     minute: Int,
     isPm: Boolean,
-    onHourChange: (Int) -> Unit,
+    onHour12Change: (Int) -> Unit,
+    onHour24Change: (Int) -> Unit,
     onMinuteChange: (Int) -> Unit,
     onAmPmToggle: () -> Unit
 ) {
@@ -886,13 +900,24 @@ fun TimePickerCard(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "WAKE-UP TIME",
-                color = Color(0xFF64748B),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "WAKE-UP TIME",
+                    color = Color(0xFF64748B),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    text = if (is24Hour) "(24H FORMAT)" else "(12H FORMAT)",
+                    color = Color(0xFF00E676),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -904,15 +929,20 @@ fun TimePickerCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     IconButton(
                         onClick = {
-                            val next = if (hour12 == 12) 1 else hour12 + 1
-                            onHourChange(next)
+                            if (is24Hour) {
+                                val next = (hour24 + 1) % 24
+                                onHour24Change(next)
+                            } else {
+                                val next = if (hour12 == 12) 1 else hour12 + 1
+                                onHour12Change(next)
+                            }
                         },
                         modifier = Modifier.size(32.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropUp, contentDescription = null, tint = Color(0xFF00E676))
                     }
                     Text(
-                        text = String.format(Locale.US, "%02d", hour12),
+                        text = String.format(Locale.US, "%02d", if (is24Hour) hour24 else hour12),
                         color = Color.White,
                         fontSize = 42.sp,
                         fontWeight = FontWeight.Black,
@@ -920,8 +950,13 @@ fun TimePickerCard(
                     )
                     IconButton(
                         onClick = {
-                            val prev = if (hour12 == 1) 12 else hour12 - 1
-                            onHourChange(prev)
+                            if (is24Hour) {
+                                val prev = if (hour24 == 0) 23 else hour24 - 1
+                                onHour24Change(prev)
+                            } else {
+                                val prev = if (hour12 == 1) 12 else hour12 - 1
+                                onHour12Change(prev)
+                            }
                         },
                         modifier = Modifier.size(32.dp)
                     ) {
@@ -966,23 +1001,25 @@ fun TimePickerCard(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(20.dp))
+                if (!is24Hour) {
+                    Spacer(modifier = Modifier.width(20.dp))
 
-                // AM / PM Toggle Pill
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF1E293B))
-                        .clickable { onAmPmToggle() }
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    Text(
-                        text = if (isPm) "PM" else "AM",
-                        color = Color(0xFFFFB300),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace
-                    )
+                    // AM / PM Toggle Pill
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1E293B))
+                            .clickable { onAmPmToggle() }
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = if (isPm) "PM" else "AM",
+                            color = Color(0xFFFFB300),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
             }
         }
@@ -1094,86 +1131,73 @@ fun RepeatDaysSelector(
 }
 
 @Composable
-fun BrainMissionSelector(
-    selectedChallenge: String,
-    onSelectChallenge: (String) -> Unit
-) {
+fun BrainMissionEnforcedCard() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF121824)),
-        border = BorderStroke(1.dp, Color(0xFF1E293B))
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF16121E)),
+        border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.6f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            Text(
-                text = "BRAIN WAKE-UP MISSION",
-                color = Color(0xFF64748B),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "Requires solving 3 mental math problems before the alarm can be dismissed.",
-                color = Color(0xFF94A3B8),
-                fontSize = 11.sp
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            val missions = listOf(
-                Triple("NONE", "Standard Dismiss", "Normal tap to dismiss"),
-                Triple("MATH_EASY", "🧠 Math (Easy)", "3 problems: 2-digit addition"),
-                Triple("MATH_HARD", "🔥 Math (Hard)", "3 problems: Multiply & Add")
-            )
-
-            missions.forEach { (challengeKey, title, sub) ->
-                val isSelected = selectedChallenge == challengeKey
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (isSelected) Color(0xFF292011) else Color(0xFF181F2F))
-                        .border(
-                            1.dp,
-                            if (isSelected) Color(0xFFFFB300) else Color(0xFF1E293B),
-                            RoundedCornerShape(10.dp)
-                        )
-                        .clickable { onSelectChallenge(challengeKey) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column {
-                        Text(
-                            text = title,
-                            color = if (isSelected) Color(0xFFFFB300) else Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = sub,
-                            color = Color(0xFF94A3B8),
-                            fontSize = 11.sp
-                        )
-                    }
-
-                    if (isSelected) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = Color(0xFFFFB300),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Psychology,
+                        contentDescription = null,
+                        tint = Color(0xFFFFB300),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "DISMISS MODE: MATH HARD",
+                        color = Color(0xFFFFB300),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp
+                    )
                 }
-                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF261D12))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = Color(0xFFFFB300),
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = "MANDATORY",
+                        color = Color(0xFFFFB300),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "🧠 3 Multi-Digit Equations: You must solve 3 multi-digit equations (e.g., (14 × 7) + 39) sequentially. Back button and simple dismiss are strictly locked until answered correctly.",
+                color = Color(0xFFE2E8F0),
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
         }
     }
 }
@@ -1288,15 +1312,7 @@ fun SoundSelectorCard(
 @Composable
 fun DisciplineTogglesCard(
     deleteAfterRinging: Boolean,
-    onToggleDeleteAfter: (Boolean) -> Unit,
-    vibrateWhileRinging: Boolean,
-    onToggleVibrate: (Boolean) -> Unit,
-    snoozeEnabled: Boolean,
-    onToggleSnooze: (Boolean) -> Unit,
-    snoozeMinutes: Int,
-    onSelectSnoozeMinutes: (Int) -> Unit,
-    maxVolumeOverride: Boolean,
-    onToggleMaxVolume: (Boolean) -> Unit
+    onToggleDeleteAfter: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1318,73 +1334,93 @@ fun DisciplineTogglesCard(
                 letterSpacing = 1.sp
             )
 
-            // Auto Delete Toggle
+            // Auto Delete Toggle (User Configurable)
             ToggleRow(
                 title = "Delete this alarm after ringing",
                 subtitle = "One-time execution; auto-removes on dismiss",
                 checked = deleteAfterRinging,
                 onCheckedChange = onToggleDeleteAfter,
-                activeColor = Color(0xFFA855F7)
+                activeColor = Color(0xFFA855F7),
+                enabled = true
             )
 
-            // Vibrate Toggle
-            ToggleRow(
+            // Vibrate Toggle - Permanently Locked ON
+            LockedToggleRow(
                 title = "Vibrate while ringing",
-                subtitle = "Continuous heavy haptic vibration pattern",
-                checked = vibrateWhileRinging,
-                onCheckedChange = onToggleVibrate,
-                activeColor = Color(0xFF00E676)
+                subtitle = "Continuous heavy haptic vibration waveform",
+                checked = true,
+                badgeText = "🔒 ALWAYS ON (Mandatory)",
+                badgeColor = Color(0xFF00E676)
             )
 
-            // Max Volume Override Toggle
-            ToggleRow(
+            // Max Volume Override Toggle - Permanently Locked ON
+            LockedToggleRow(
                 title = "100% Max Volume Override",
                 subtitle = "Bypasses silent/vibrate switch to ring at full power",
-                checked = maxVolumeOverride,
-                onCheckedChange = onToggleMaxVolume,
-                activeColor = Color(0xFFFF2E54)
+                checked = true,
+                badgeText = "🔒 ALWAYS ON (Mandatory)",
+                badgeColor = Color(0xFFFF2E54)
             )
 
-            // Snooze Toggle & Duration
-            Column {
-                ToggleRow(
-                    title = "Allow Snooze",
-                    subtitle = "Temporary delay (or turn off for pure discipline)",
-                    checked = snoozeEnabled,
-                    onCheckedChange = onToggleSnooze,
-                    activeColor = Color(0xFF38BDF8)
-                )
-
-                AnimatedVisibility(visible = snoozeEnabled) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        listOf(5, 10, 15).forEach { min ->
-                            val isSelected = snoozeMinutes == min
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) Color(0xFF38BDF8) else Color(0xFF1E293B))
-                                    .clickable { onSelectSnoozeMinutes(min) }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "$min min",
-                                    color = if (isSelected) Color(0xFF06080E) else Color(0xFF94A3B8),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            // Snooze Toggle - Permanently Locked DISABLED
+            LockedToggleRow(
+                title = "Allow Snooze",
+                subtitle = "No snooze option permitted under strict discipline protocol",
+                checked = false,
+                badgeText = "🚫 DISABLED (No Snooze Allowed)",
+                badgeColor = Color(0xFF64748B)
+            )
         }
+    }
+}
+
+@Composable
+fun LockedToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    badgeText: String,
+    badgeColor: Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = subtitle,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Text(
+                text = badgeText,
+                color = badgeColor,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+            enabled = false,
+            colors = SwitchDefaults.colors(
+                disabledCheckedThumbColor = Color(0xFF06080E),
+                disabledCheckedTrackColor = badgeColor.copy(alpha = 0.7f),
+                disabledUncheckedThumbColor = Color(0xFF475569),
+                disabledUncheckedTrackColor = Color(0xFF1E293B)
+            )
+        )
     }
 }
 
@@ -1394,7 +1430,8 @@ fun ToggleRow(
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    activeColor: Color
+    activeColor: Color,
+    enabled: Boolean = true
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1420,6 +1457,7 @@ fun ToggleRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color(0xFF06080E),
                 checkedTrackColor = activeColor,

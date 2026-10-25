@@ -60,6 +60,10 @@ class HardAlarmSoundEngine private constructor() {
                 instance ?: HardAlarmSoundEngine().also { instance = it }
             }
         }
+
+        fun stopSound() {
+            getInstance().stopSound()
+        }
     }
 
     /**

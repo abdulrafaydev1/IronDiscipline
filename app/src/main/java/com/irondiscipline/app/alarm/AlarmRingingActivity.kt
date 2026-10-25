@@ -1,8 +1,11 @@
 package com.irondiscipline.app.alarm
 
+import android.app.KeyguardManager
 import android.content.Context
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -35,7 +38,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Button
@@ -60,6 +62,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -67,18 +70,25 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.irondiscipline.app.BuildConfig
 import com.irondiscipline.app.ui.theme.IronDisciplineTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
 
+/**
+ * Full-screen Alarm Ringing Activity enforcing strict Hard Math Challenge dismissal.
+ * No snooze, locked volume down, keyguard unlock handoff, and dev test dismiss fallback.
+ */
 class AlarmRingingActivity : ComponentActivity() {
+
+    private var activeAlarmId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Turn screen on and show over lock screen
+        // Wake screen and display directly over lock screen
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -91,37 +101,82 @@ class AlarmRingingActivity : ComponentActivity() {
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
 
-        // Prevent bypass via back button
+        // Prevent bypass via Back button press
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                // Must solve math challenge or tap Dismiss/Snooze
+                // Back button completely disabled
             }
         })
 
-        val alarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+        activeAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
         val repository = AlarmRepository.getInstance(applicationContext)
-        val alarm = if (alarmId != null) repository.getAlarmById(alarmId) else null
+        val alarm = if (activeAlarmId != null) repository.getAlarmById(activeAlarmId!!) else null
 
         setContent {
             IronDisciplineTheme {
                 AlarmRingingScreen(
                     alarm = alarm,
-                    onDismiss = {
-                        if (alarmId != null) {
-                            repository.handleAlarmDismissed(alarmId)
-                        }
-                        AlarmRingingService.stopRinging(this)
-                        finish()
+                    onDismissCompleted = {
+                        completeAlarmAndDismiss(activeAlarmId)
                     },
-                    onSnooze = {
-                        if (alarm != null) {
-                            AlarmScheduler.getInstance(this).scheduleSnooze(alarm, alarm.snoozeMinutes)
-                        }
-                        AlarmRingingService.stopRinging(this)
-                        finish()
+                    onDevTestDismiss = {
+                        completeAlarmAndDismiss(activeAlarmId)
                     }
                 )
             }
+        }
+    }
+
+    /**
+     * Intercept hardware volume down and mute keys to maintain 100% alarm volume.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_MUTE ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_UP
+        ) {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                am?.let {
+                    val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                    it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+                }
+            } catch (_: Exception) {}
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    /**
+     * Terminate alarm ringing service, update repository, and hand off to device keyguard unlock.
+     */
+    private fun completeAlarmAndDismiss(alarmId: String?) {
+        val repository = AlarmRepository.getInstance(applicationContext)
+        if (alarmId != null) {
+            repository.handleAlarmDismissed(alarmId)
+        }
+        AlarmRingingService.stopRinging(this, alarmId)
+
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && keyguardManager != null && keyguardManager.isKeyguardLocked) {
+            keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    super.onDismissSucceeded()
+                    finishAndRemoveTask()
+                }
+
+                override fun onDismissError() {
+                    super.onDismissError()
+                    finishAndRemoveTask()
+                }
+
+                override fun onDismissCancelled() {
+                    super.onDismissCancelled()
+                    finishAndRemoveTask()
+                }
+            })
+        } else {
+            finishAndRemoveTask()
         }
     }
 }
@@ -131,30 +186,32 @@ data class MathProblem(val text: String, val answer: Int)
 @Composable
 fun AlarmRingingScreen(
     alarm: AlarmItem?,
-    onDismiss: () -> Unit,
-    onSnooze: () -> Unit
+    onDismissCompleted: () -> Unit,
+    onDevTestDismiss: () -> Unit
 ) {
-    var currentTimeString by remember { mutableStateOf(getFormattedCurrentTime()) }
+    val context = LocalContext.current
+    var currentTimeString by remember { mutableStateOf(getFormattedCurrentTime(context)) }
 
     LaunchedEffect(Unit) {
         while (true) {
-            currentTimeString = getFormattedCurrentTime()
+            currentTimeString = getFormattedCurrentTime(context)
             kotlinx.coroutines.delay(1000L)
         }
     }
 
-    val requiresMath = alarm?.dismissChallenge in listOf("MATH_EASY", "MATH_HARD")
-    val isHardMath = alarm?.dismissChallenge == "MATH_HARD"
-
-    // Math Challenge State: must solve 3 problems
-    var solvedCount by remember { mutableIntStateOf(0) }
-    var currentProblem by remember {
-        mutableStateOf(generateMathProblem(isHard = isHardMath))
+    // Dev test dismiss condition
+    val isTestOrDebugMode = remember {
+        val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+        BuildConfig.DEBUG ||
+            prefs.getBoolean("is_test_mode", false) ||
+            prefs.getBoolean("enable_dev_test_dismiss", true)
     }
+
+    // Mandatory Hard Math Challenge State: Solve 3 sequential problems
+    var solvedCount by remember { mutableIntStateOf(0) }
+    var currentProblem by remember { mutableStateOf(generateHardMathProblem()) }
     var userAnswerText by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    val challengeCompleted = !requiresMath || (solvedCount >= 3)
 
     // Pulsing animation for warning ring
     val infiniteTransition = rememberInfiniteTransition(label = "AlarmRingingPulse")
@@ -169,6 +226,25 @@ fun AlarmRingingScreen(
     )
 
     val scrollState = rememberScrollState()
+
+    fun evaluateAnswer() {
+        val userVal = userAnswerText.trim().toIntOrNull()
+        if (userVal == currentProblem.answer) {
+            val nextSolved = solvedCount + 1
+            if (nextSolved >= 3) {
+                // Completed all 3 equations -> Dismiss immediately
+                onDismissCompleted()
+            } else {
+                solvedCount = nextSolved
+                userAnswerText = ""
+                errorMessage = null
+                currentProblem = generateHardMathProblem()
+            }
+        } else {
+            errorMessage = "❌ Galat Jawab! Dobara solve karein."
+            userAnswerText = ""
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -212,7 +288,7 @@ fun AlarmRingingScreen(
             Text(
                 text = currentTimeString,
                 color = Color.White,
-                fontSize = 46.sp,
+                fontSize = 44.sp,
                 fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
                 letterSpacing = 2.sp
@@ -239,220 +315,167 @@ fun AlarmRingingScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Math Brain Mission Section (if enabled)
-            if (requiresMath && !challengeCompleted) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.5.dp, Color(0xFFFFB300), RoundedCornerShape(20.dp)),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141923))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Psychology,
-                                contentDescription = null,
-                                tint = Color(0xFFFFB300),
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "WAKE-UP BRAIN MISSION",
-                                color = Color(0xFFFFB300),
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.sp,
-                                letterSpacing = 1.0.sp
-                            )
-                        }
-
-                        Text(
-                            text = "Solve 3 math problems to unlock alarm dismissal ($solvedCount / 3)",
-                            color = Color(0xFF8A99AD),
-                            fontSize = 11.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
-                        )
-
-                        // Math Question Box
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF090D15))
-                                .border(1.dp, Color(0xFF26334D), RoundedCornerShape(12.dp))
-                            .padding(vertical = 14.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "${currentProblem.text} = ?",
-                                color = Color.White,
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Black,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // User Answer Input
-                        OutlinedTextField(
-                            value = userAnswerText,
-                            onValueChange = {
-                                userAnswerText = it
-                                errorMessage = null
-                            },
-                            placeholder = { Text("Enter answer", color = Color(0xFF5E6D82)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Number,
-                                imeAction = ImeAction.Done
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onDone = {
-                                    val userVal = userAnswerText.toIntOrNull()
-                                    if (userVal == currentProblem.answer) {
-                                        val nextSolved = solvedCount + 1
-                                        solvedCount = nextSolved
-                                        userAnswerText = ""
-                                        errorMessage = null
-                                        if (nextSolved < 3) {
-                                            currentProblem = generateMathProblem(isHard = isHardMath)
-                                        }
-                                    } else {
-                                        errorMessage = "Incorrect answer. Try again!"
-                                    }
-                                }
-                            ),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFFFFB300),
-                                unfocusedBorderColor = Color(0xFF26334D)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        if (errorMessage != null) {
-                            Text(
-                                text = errorMessage!!,
-                                color = Color(0xFFFF2E54),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(top = 6.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                val userVal = userAnswerText.toIntOrNull()
-                                if (userVal == currentProblem.answer) {
-                                    val nextSolved = solvedCount + 1
-                                    solvedCount = nextSolved
-                                    userAnswerText = ""
-                                    errorMessage = null
-                                    if (nextSolved < 3) {
-                                        currentProblem = generateMathProblem(isHard = isHardMath)
-                                    }
-                                } else {
-                                    errorMessage = "Incorrect answer. Try again!"
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(46.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFFFB300),
-                                contentColor = Color(0xFF06080E)
-                            )
-                        ) {
-                            Text("Submit Answer", fontWeight = FontWeight.Black, fontSize = 13.sp)
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(20.dp))
-            } else if (requiresMath) {
-                // Mission Solved Indicator
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = Color(0xFF00E676),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "BRAIN MISSION SOLVED • YOU ARE AWAKE",
-                        color = Color(0xFF00E676),
-                        fontWeight = FontWeight.Black,
-                        fontSize = 12.sp,
-                        letterSpacing = 1.0.sp
-                    )
-                }
-            }
-
-            // Primary Dismiss Button
-            Button(
-                onClick = onDismiss,
-                enabled = challengeCompleted,
+            // Math Hard Brain Mission Card (Mandatory Dismiss Option)
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFFF2E54),
-                    contentColor = Color.White,
-                    disabledContainerColor = Color(0xFF331620),
-                    disabledContentColor = Color(0xFF884050)
-                )
+                    .border(1.5.dp, Color(0xFFFFB300), RoundedCornerShape(20.dp)),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141923))
             ) {
-                if (challengeCompleted) {
-                    Text(
-                        text = "DISMISS ALARM",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 16.sp,
-                        letterSpacing = 1.5.sp
-                    )
-                } else {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.Lock,
+                            imageVector = Icons.Default.Psychology,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                            tint = Color(0xFFFFB300),
+                            modifier = Modifier.size(22.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "LOCKED (SOLVE MATH MISSION)",
+                            text = "MANDATORY MATH HARD MISSION",
+                            color = Color(0xFFFFB300),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp,
+                            letterSpacing = 1.0.sp
+                        )
+                    }
+
+                    Text(
+                        text = "Solve 3 multi-digit equations to unlock dismissal (${solvedCount + 1} of 3)",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                    )
+
+                    // Math Question Box
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF090D15))
+                            .border(1.dp, Color(0xFF26334D), RoundedCornerShape(12.dp))
+                            .padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${currentProblem.text} = ?",
+                            color = Color.White,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // User Answer Input Field
+                    OutlinedTextField(
+                        value = userAnswerText,
+                        onValueChange = {
+                            userAnswerText = it
+                            errorMessage = null
+                        },
+                        placeholder = { Text("Enter answer", color = Color(0xFF5E6D82)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { evaluateAnswer() }
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = Color(0xFFFFB300),
+                            unfocusedBorderColor = Color(0xFF26334D)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage!!,
+                            color = Color(0xFFFF2E54),
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Button(
+                        onClick = { evaluateAnswer() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFFB300),
+                            contentColor = Color(0xFF06080E)
+                        )
+                    ) {
+                        Text(
+                            text = if (solvedCount == 2) "SOLVE & DISMISS ALARM" else "SUBMIT ANSWER (${solvedCount + 1}/3)",
+                            fontWeight = FontWeight.Black,
                             fontSize = 13.sp
                         )
                     }
                 }
             }
 
-            // Snooze Button (if allowed by alarm settings)
-            if (alarm?.snoozeEnabled == true) {
-                Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Locked Dismiss Indicator
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF1E1417))
+                    .border(1.dp, Color(0xFF4A1A24), RoundedCornerShape(14.dp))
+                    .padding(vertical = 12.dp, horizontal = 16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = Color(0xFFFF2E54),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "STANDARD DISMISS LOCKED (SOLVE ALL 3 EQUATIONS)",
+                        color = Color(0xFFFF7B93),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
+
+            // Developer / Debug Test Dismiss Button
+            if (isTestOrDebugMode) {
+                Spacer(modifier = Modifier.height(14.dp))
                 OutlinedButton(
-                    onClick = onSnooze,
+                    onClick = onDevTestDismiss,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp),
                     shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFF334460))
+                    border = BorderStroke(1.dp, Color(0xFFFF9100)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9100))
                 ) {
                     Text(
-                        text = "SNOOZE (${alarm.snoozeMinutes} MINUTES)",
-                        color = Color(0xFF38BDF8),
+                        text = "🛠️ TEST DISMISS (Stop Alarm Immediately)",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -460,27 +483,23 @@ fun AlarmRingingScreen(
     }
 }
 
-private fun getFormattedCurrentTime(): String {
-    val sdf = SimpleDateFormat("hh:mm:ss a", Locale.US)
+private fun getFormattedCurrentTime(context: Context): String {
+    val is24 = android.text.format.DateFormat.is24HourFormat(context)
+    val pattern = if (is24) "HH:mm:ss" else "hh:mm:ss a"
+    val sdf = SimpleDateFormat(pattern, Locale.US)
     return sdf.format(Date()).uppercase(Locale.US)
 }
 
-private fun generateMathProblem(isHard: Boolean): MathProblem {
-    return if (!isHard) {
-        val a = Random.nextInt(12, 60)
-        val b = Random.nextInt(11, 49)
-        val isAdd = Random.nextBoolean()
-        if (isAdd) {
-            MathProblem("$a + $b", a + b)
-        } else {
-            val max = maxOf(a, b)
-            val min = minOf(a, b)
-            MathProblem("$max - $min", max - min)
-        }
-    } else {
-        val a = Random.nextInt(7, 18)
-        val b = Random.nextInt(6, 14)
-        val c = Random.nextInt(15, 60)
-        MathProblem("($a × $b) + $c", (a * b) + c)
+/**
+ * Generates challenging multi-digit math equations e.g. (14 × 7) + 39.
+ */
+private fun generateHardMathProblem(): MathProblem {
+    val a = Random.nextInt(12, 20) // 12..19
+    val b = Random.nextInt(6, 15)  // 6..14
+    val c = Random.nextInt(18, 65) // 18..64
+    return when (Random.nextInt(0, 3)) {
+        0 -> MathProblem("($a × $b) + $c", (a * b) + c)
+        1 -> MathProblem("($a × $b) - $c", (a * b) - c)
+        else -> MathProblem("$c + ($a × $b)", c + (a * b))
     }
 }

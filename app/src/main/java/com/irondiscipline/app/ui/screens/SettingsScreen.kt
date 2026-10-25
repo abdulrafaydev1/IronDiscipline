@@ -38,6 +38,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -88,6 +90,11 @@ fun SettingsScreen(
     val scrollState = rememberScrollState()
     var showUninstallPinDialog by remember { mutableStateOf(false) }
     var showChangePinDialog by remember { mutableStateOf(false) }
+
+    val prefs = remember { context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE) }
+    var devTestDismissEnabled by remember {
+        mutableStateOf(prefs.getBoolean("enable_dev_test_dismiss", true))
+    }
 
     if (showUninstallPinDialog) {
         UninstallPinDialog(
@@ -419,6 +426,51 @@ fun SettingsScreen(
                         text = "🔐 Change Security PIN (Default: 1234)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Developer Test Dismiss Toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(Color(0xFF0F1522))
+                        .border(1.dp, Color(0xFF1E2D40), RoundedCornerShape(13.dp))
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "🛠️ Dev Test Dismiss on Alarm",
+                            color = ColorTextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Shows instant bypass button on alarm screen for developer debugging.",
+                            color = ColorTextSecondary,
+                            fontSize = 10.sp,
+                            lineHeight = 14.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Switch(
+                        checked = devTestDismissEnabled,
+                        onCheckedChange = { isChecked ->
+                            devTestDismissEnabled = isChecked
+                            prefs.edit().putBoolean("enable_dev_test_dismiss", isChecked).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF06080E),
+                            checkedTrackColor = ColorCyberAmber,
+                            uncheckedThumbColor = ColorTextMuted,
+                            uncheckedTrackColor = Color(0xFF1E293B)
+                        )
                     )
                 }
             }
