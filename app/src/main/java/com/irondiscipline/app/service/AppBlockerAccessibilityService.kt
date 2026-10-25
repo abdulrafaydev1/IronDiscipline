@@ -818,7 +818,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         fun dismissOverlayIfShowing() {
             val service = instance ?: return
-            service.mainHandler.post {
+            Handler(Looper.getMainLooper()).post {
                 service.hideNativeBlockOverlay()
             }
         }

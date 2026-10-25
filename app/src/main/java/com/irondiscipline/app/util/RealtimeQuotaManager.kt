@@ -168,6 +168,10 @@ class RealtimeQuotaManager private constructor(context: Context) {
         return CoreTargetApp.entries.any { isAppLocked(it.appKey) }
     }
 
+    fun incrementUsedSecond(appKey: String, nowEpochMs: Long = System.currentTimeMillis()): Int {
+        return getUsedSecondsToday(appKey)
+    }
+
     /**
      * Publishes latest SharedPreferences state to the UI StateFlow.
      * Guaranteed read-only; never mutates or fluctuates used_seconds.
