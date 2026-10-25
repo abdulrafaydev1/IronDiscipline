@@ -5,18 +5,23 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.irondiscipline.app.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +38,7 @@ import kotlinx.coroutines.launch
 class AlarmRingingService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var volumeGuardJob: Job? = null
     private var vibrator: Vibrator? = null
     private val soundEngine = HardAlarmSoundEngine.getInstance()
@@ -40,13 +46,60 @@ class AlarmRingingService : Service() {
     @Volatile
     private var currentlyRingingAlarmId: String? = null
 
+    private var isUnlockReceiverRegistered = false
+
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent?) {
+            val action = intent?.action ?: return
+            if ((action == Intent.ACTION_USER_PRESENT || action == Intent.ACTION_SCREEN_ON) && isCurrentlyRinging) {
+                bringAlarmScreenToFront(context)
+                mainHandler.postDelayed({
+                    if (isCurrentlyRinging) {
+                        bringAlarmScreenToFront(context)
+                    }
+                }, 150L)
+            }
+        }
+    }
+
     companion object {
         const val CHANNEL_ID = "iron_alarm_lockscreen_channel_v2"
         const val NOTIFICATION_ID = 2026
 
+        @Volatile
+        var isCurrentlyRinging: Boolean = false
+
+        @Volatile
+        var currentRingingAlarmId: String? = null
+
+        @Volatile
+        var currentRingingAlarmLabel: String? = null
+
         fun stopRinging(context: Context, alarmId: String? = null) {
+            isCurrentlyRinging = false
+            currentRingingAlarmId = null
+            currentRingingAlarmLabel = null
             val intent = Intent(context, AlarmRingingService::class.java)
             context.stopService(intent)
+        }
+
+        fun bringAlarmScreenToFront(context: Context) {
+            if (!isCurrentlyRinging) return
+            val intent = Intent(context, AlarmRingingActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, currentRingingAlarmId)
+                putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, currentRingingAlarmLabel)
+            }
+            try {
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -58,6 +111,18 @@ class AlarmRingingService : Service() {
 
         // Acquire CPU and Screen WakeLocks immediately
         AlarmWakeLockManager.acquireWakeLocks(this)
+
+        // Register dynamic receiver for phone unlock (ACTION_USER_PRESENT) and screen wake (ACTION_SCREEN_ON)
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        try {
+            ContextCompat.registerReceiver(this, unlockReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+            isUnlockReceiverRegistered = true
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
@@ -74,6 +139,7 @@ class AlarmRingingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val alarmId = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+        val alarmLabel = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
         val repository = AlarmRepository.getInstance(applicationContext)
         val alarm = if (alarmId != null) repository.getAlarmById(alarmId) else null
 
@@ -93,21 +159,13 @@ class AlarmRingingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // 2. Direct Activity Launch in addition to fullScreenIntent
-        try {
-            val activityIntent = Intent(this, AlarmRingingActivity::class.java).apply {
-                putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
-                putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm?.label)
-                putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm?.soundIndex ?: 0)
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_NO_USER_ACTION
-                )
-            }
-            startActivity(activityIntent)
-        } catch (_: Exception) {}
+        // Update active ringing state and metadata
+        isCurrentlyRinging = true
+        currentRingingAlarmId = alarmId
+        currentRingingAlarmLabel = alarm?.label ?: alarmLabel
+
+        // 2. Bring existing or new AlarmRingingActivity to front
+        bringAlarmScreenToFront(this)
 
         // 3. Prevent duplicate playback threads if already ringing for this alarm
         if (currentlyRingingAlarmId != null && currentlyRingingAlarmId == alarmId) {
@@ -212,7 +270,19 @@ class AlarmRingingService : Service() {
     }
 
     override fun onDestroy() {
+        isCurrentlyRinging = false
+        currentRingingAlarmId = null
+        currentRingingAlarmLabel = null
         currentlyRingingAlarmId = null
+
+        if (isUnlockReceiverRegistered) {
+            try {
+                unregisterReceiver(unlockReceiver)
+            } catch (_: Exception) {}
+            isUnlockReceiverRegistered = false
+        }
+        mainHandler.removeCallbacksAndMessages(null)
+
         volumeGuardJob?.cancel()
         soundEngine.stopSound()
 

@@ -84,9 +84,11 @@ import java.util.Locale
 class AlarmRingingActivity : ComponentActivity() {
 
     private var activeAlarmId: String? = null
+    private var isAlarmDismissed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isAlarmDismissed = false
 
         // 1. Wake screen and display directly over lock screen
         applyScreenAndLockFlags()
@@ -124,9 +126,19 @@ class AlarmRingingActivity : ComponentActivity() {
         setIntent(intent)
         applyScreenAndLockFlags()
 
-        intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)?.let {
-            activeAlarmId = it
-            ActiveAlarmSessionState.initSession(it)
+        // Preserve single instance & Math Hard questions; do NOT re-init or reset active session
+        val incomingAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+        if (activeAlarmId == null && incomingAlarmId != null) {
+            activeAlarmId = incomingAlarmId
+            ActiveAlarmSessionState.initSession(incomingAlarmId)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // If the alarm is still actively ringing and was pushed to background by phone unlock / home transition:
+        if (!isAlarmDismissed && !isFinishing && AlarmRingingService.isCurrentlyRinging) {
+            AlarmRingingService.bringAlarmScreenToFront(applicationContext)
         }
     }
 
@@ -139,8 +151,7 @@ class AlarmRingingActivity : ComponentActivity() {
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         )
     }
 
@@ -169,6 +180,7 @@ class AlarmRingingActivity : ComponentActivity() {
      * and trigger official Android lock-screen unlock flow.
      */
     private fun completeAlarmAndDismiss(alarmId: String?) {
+        isAlarmDismissed = true
         val repository = AlarmRepository.getInstance(applicationContext)
         if (alarmId != null) {
             repository.handleAlarmDismissed(alarmId)

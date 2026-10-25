@@ -123,11 +123,12 @@
         <activity
             android:name=".alarm.AlarmRingingActivity"
             android:exported="false"
-            android:launchMode="singleInstance"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|navigation"
             android:theme="@style/Theme.IronDiscipline" />
 
     </application>
