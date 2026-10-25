@@ -133,6 +133,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
                 val fgPkg = currentForegroundPackage
 
+                // Anti-Cheat: Block Calculator during wake-up math mission
+                val sharedPrefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+                val isAlarmRinging = sharedPrefs.getBoolean("is_alarm_currently_ringing", false)
+                if (isAlarmRinging && !fgPkg.isNullOrBlank()) {
+                    val isCalculator = CALCULATOR_PACKAGES.contains(fgPkg) ||
+                        fgPkg.contains("calc", ignoreCase = true)
+                    if (isCalculator) {
+                        showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)", nowMs)
+                        continue
+                    }
+                }
+
                 // If user navigated to Home Launcher, hide overlay and restore audio
                 if (!fgPkg.isNullOrBlank() && isHomeLauncherPackage(fgPkg)) {
                     if (overlayRootView != null) {
@@ -211,6 +223,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         if (isTransientSystemOrKeyboardPackage(pkgName)) {
             return
+        }
+
+        // Anti-Cheat: Block Calculator if wake-up alarm is ringing
+        val sharedPrefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+        if (sharedPrefs.getBoolean("is_alarm_currently_ringing", false)) {
+            if (CALCULATOR_PACKAGES.contains(pkgName) || pkgName.contains("calc", ignoreCase = true)) {
+                showOrUpdateNonCoreBlockOverlay("Calculator (Math Mission Active)", System.currentTimeMillis())
+                return
+            }
         }
 
         if (pkgName == packageName) {
@@ -852,6 +873,20 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 service.hideNativeBlockOverlay()
             }
         }
+
+        val CALCULATOR_PACKAGES = setOf(
+            "com.google.android.calculator",
+            "com.sec.android.app.popupcalculator",
+            "com.miui.calculator",
+            "com.coloros.calculator",
+            "com.heytap.openid",
+            "com.oneplus.calculator",
+            "com.asus.calculator",
+            "com.huawei.calculator",
+            "com.android.calculator2",
+            "com.transsion.calculator",
+            "com.vivo.calculator"
+        )
 
         private val SETTINGS_AND_INSTALLER_PACKAGES = setOf(
             "com.android.settings",

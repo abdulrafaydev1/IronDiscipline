@@ -1,0 +1,114 @@
+package com.irondiscipline.app.alarm
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.UUID
+
+/**
+ * Core Alarm Data Model representing an IronDiscipline hard alarm configuration.
+ */
+data class AlarmItem(
+    val id: String = UUID.randomUUID().toString(),
+    val hour: Int,
+    val minute: Int,
+    val isEnabled: Boolean = true,
+    val label: String = "Hard Discipline Alarm",
+    val repeatDays: Set<Int> = emptySet(), // Calendar.MONDAY (2) .. Calendar.SUNDAY (1)
+    val deleteAfterRinging: Boolean = false,
+    val soundIndex: Int = 0,
+    val snoozeEnabled: Boolean = true,
+    val snoozeMinutes: Int = 10,
+    val vibrateWhileRinging: Boolean = true,
+    val dismissChallenge: String = "NONE", // "NONE", "MATH_EASY", "MATH_HARD"
+    val maxVolumeOverride: Boolean = true
+) {
+    val formattedTime: String
+        get() {
+            val cal = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, hour)
+                set(Calendar.MINUTE, minute)
+            }
+            val format = SimpleDateFormat("hh:mm a", Locale.US)
+            return format.format(cal.time).uppercase(Locale.US)
+        }
+
+    val isRepeating: Boolean
+        get() = repeatDays.isNotEmpty()
+
+    val soundDisplayName: String
+        get() = HardAlarmSoundEngine.SOUND_NAMES.getOrElse(soundIndex) { "1. Nuclear Air Raid Siren" }
+
+    val repeatDaysFormatted: String
+        get() = if (repeatDays.isEmpty()) {
+            if (deleteAfterRinging) "Once (Auto-Delete)" else "One-Time Alarm"
+        } else if (repeatDays.size == 7) {
+            "Every Day"
+        } else if (repeatDays == setOf(Calendar.MONDAY, Calendar.TUESDAY, Calendar.WEDNESDAY, Calendar.THURSDAY, Calendar.FRIDAY)) {
+            "Weekdays (Mon-Fri)"
+        } else if (repeatDays == setOf(Calendar.SATURDAY, Calendar.SUNDAY)) {
+            "Weekends (Sat-Sun)"
+        } else {
+            val dayOrder = listOf(
+                Calendar.MONDAY to "Mon",
+                Calendar.TUESDAY to "Tue",
+                Calendar.WEDNESDAY to "Wed",
+                Calendar.THURSDAY to "Thu",
+                Calendar.FRIDAY to "Fri",
+                Calendar.SATURDAY to "Sat",
+                Calendar.SUNDAY to "Sun"
+            )
+            dayOrder.filter { it.first in repeatDays }.joinToString(", ") { it.second }
+        }
+
+    fun toJsonObject(): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("hour", hour)
+            put("minute", minute)
+            put("isEnabled", isEnabled)
+            put("label", label)
+            put("deleteAfterRinging", deleteAfterRinging)
+            put("soundIndex", soundIndex)
+            put("snoozeEnabled", snoozeEnabled)
+            put("snoozeMinutes", snoozeMinutes)
+            put("vibrateWhileRinging", vibrateWhileRinging)
+            put("dismissChallenge", dismissChallenge)
+            put("maxVolumeOverride", maxVolumeOverride)
+
+            val daysArray = JSONArray()
+            repeatDays.forEach { daysArray.put(it) }
+            put("repeatDays", daysArray)
+        }
+    }
+
+    companion object {
+        fun fromJsonObject(json: JSONObject): AlarmItem {
+            val daysSet = mutableSetOf<Int>()
+            val daysArray = json.optJSONArray("repeatDays")
+            if (daysArray != null) {
+                for (i in 0 until daysArray.length()) {
+                    daysSet.add(daysArray.getInt(i))
+                }
+            }
+
+            return AlarmItem(
+                id = json.optString("id", UUID.randomUUID().toString()),
+                hour = json.optInt("hour", 6),
+                minute = json.optInt("minute", 0),
+                isEnabled = json.optBoolean("isEnabled", true),
+                label = json.optString("label", "Hard Discipline Alarm"),
+                repeatDays = daysSet,
+                deleteAfterRinging = json.optBoolean("deleteAfterRinging", false),
+                soundIndex = json.optInt("soundIndex", 0),
+                snoozeEnabled = json.optBoolean("snoozeEnabled", true),
+                snoozeMinutes = json.optInt("snoozeMinutes", 10),
+                vibrateWhileRinging = json.optBoolean("vibrateWhileRinging", true),
+                dismissChallenge = json.optString("dismissChallenge", "NONE"),
+                maxVolumeOverride = json.optBoolean("maxVolumeOverride", true)
+            )
+        }
+    }
+}

@@ -12,6 +12,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
             action == Intent.ACTION_MY_PACKAGE_REPLACED
         ) {
             DisciplineMonitorService.startServiceIfNeeded(context)
+            try {
+                com.irondiscipline.app.alarm.AlarmRepository.getInstance(context).rescheduleAllActiveAlarms()
+            } catch (_: Exception) {}
         }
     }
 }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Icon
@@ -33,12 +34,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.irondiscipline.app.alarm.AlarmRepository
+import com.irondiscipline.app.ui.screens.AlarmScreen
 import com.irondiscipline.app.ui.screens.DashboardScreen
 import com.irondiscipline.app.ui.screens.SettingsScreen
 import com.irondiscipline.app.ui.theme.IronDisciplineTheme
@@ -139,10 +143,36 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                     )
                 )
 
-                // Tab 2: Settings
+                // Tab 2: Alarm (Center Tab)
                 NavigationBarItem(
                     selected = selectedTabIndex == 1,
                     onClick = { selectedTabIndex = 1 },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Alarm,
+                            contentDescription = "Alarm"
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "Alarm",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color(0xFFFF2E54),
+                        selectedTextColor = Color(0xFFFF2E54),
+                        unselectedIconColor = Color(0xFF64748B),
+                        unselectedTextColor = Color(0xFF64748B),
+                        indicatorColor = Color(0xFFFF2E54).copy(alpha = 0.15f)
+                    )
+                )
+
+                // Tab 3: Settings
+                NavigationBarItem(
+                    selected = selectedTabIndex == 2,
+                    onClick = { selectedTabIndex = 2 },
                     icon = {
                         Icon(
                             imageVector = Icons.Default.Settings,
@@ -167,6 +197,9 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
             }
         }
     ) { innerPadding ->
+        val context = LocalContext.current
+        val alarmRepository = remember { AlarmRepository.getInstance(context) }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -181,7 +214,10 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                     onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
                     onRefreshPermissions = viewModel::refreshPermissionsAndApps
                 )
-                1 -> SettingsScreen(
+                1 -> AlarmScreen(
+                    alarmRepository = alarmRepository
+                )
+                2 -> SettingsScreen(
                     permissionState = permissionState,
                     onRefreshPermissions = viewModel::refreshPermissionsAndApps
                 )
