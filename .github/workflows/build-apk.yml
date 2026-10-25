@@ -27,7 +27,16 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace --info --no-daemon
+        run: |
+          mkdir -p build_logs
+          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee build_logs/gradle_build.log || (echo "=== GRADLE FAILURE LOG ===" && tail -n 150 build_logs/gradle_build.log && exit 1)
+
+      - name: Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build_logs/
 
       - name: Upload Build Reports on Failure
         if: failure()

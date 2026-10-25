@@ -238,11 +238,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         // 1. Check interactive application windows on screen first
         try {
-            val windowList = windows
+            val windowList = try { getWindows() } catch (_: Exception) { null }
             if (!windowList.isNullOrEmpty()) {
                 for (window in windowList) {
-                    if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
-                        val winPkg = window.root?.packageName?.toString()
+                    if (window != null && window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        val rootNode = try { window.root } catch (_: Exception) { null }
+                        val winPkg = rootNode?.packageName?.toString()
                         if (!isIgnoredSystemPackage(winPkg)) {
                             if (winPkg == packageName || isHomeLauncherPackage(winPkg.orEmpty())) {
                                 currentTargetAppKey = null
@@ -1050,7 +1051,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             "com.vivo.calculator"
         )
 
-        private val SETTINGS_AND_INSTALLER_PACKAGES = setOf(
+        val SETTINGS_AND_INSTALLER_PACKAGES = setOf(
             "com.android.settings",
             "com.google.android.packageinstaller",
             "com.android.packageinstaller",
