@@ -119,12 +119,12 @@ class AlarmRingingActivity : ComponentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         applyScreenAndLockFlags()
 
-        intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)?.let {
+        intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)?.let {
             activeAlarmId = it
             ActiveAlarmSessionState.initSession(it)
         }
