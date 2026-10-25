@@ -75,19 +75,22 @@ class AlarmRepository(private val context: Context) {
 
     @Synchronized
     fun saveAlarm(alarm: AlarmItem) {
+        val nextTriggerMs = if (alarm.isEnabled) scheduler.calculateNextTriggerEpochMs(alarm) else 0L
+        val alarmWithTrigger = alarm.copy(nextTriggerAtMillis = nextTriggerMs)
+
         val current = _alarmsFlow.value.toMutableList()
         val existingIndex = current.indexOfFirst { it.id == alarm.id }
         if (existingIndex >= 0) {
-            current[existingIndex] = alarm
+            current[existingIndex] = alarmWithTrigger
         } else {
-            current.add(alarm)
+            current.add(alarmWithTrigger)
         }
         saveAlarmsToPrefs(current)
 
-        if (alarm.isEnabled) {
-            scheduler.scheduleAlarm(alarm)
+        if (alarmWithTrigger.isEnabled) {
+            scheduler.scheduleAlarm(alarmWithTrigger)
         } else {
-            scheduler.cancelAlarm(alarm.id)
+            scheduler.cancelAlarm(alarmWithTrigger.id)
         }
     }
 
@@ -104,7 +107,9 @@ class AlarmRepository(private val context: Context) {
         val current = _alarmsFlow.value.toMutableList()
         val index = current.indexOfFirst { it.id == alarmId }
         if (index >= 0) {
-            val updated = current[index].copy(isEnabled = isEnabled)
+            val existing = current[index]
+            val nextTriggerMs = if (isEnabled) scheduler.calculateNextTriggerEpochMs(existing) else 0L
+            val updated = existing.copy(isEnabled = isEnabled, nextTriggerAtMillis = nextTriggerMs)
             current[index] = updated
             saveAlarmsToPrefs(current)
 
@@ -134,7 +139,15 @@ class AlarmRepository(private val context: Context) {
         if (alarm.deleteAfterRinging) {
             deleteAlarm(alarm.id)
         } else if (alarm.isRepeating) {
-            scheduler.scheduleAlarm(alarm)
+            val nextTriggerMs = scheduler.calculateNextTriggerEpochMs(alarm)
+            val updated = alarm.copy(isEnabled = true, nextTriggerAtMillis = nextTriggerMs)
+            val current = _alarmsFlow.value.toMutableList()
+            val index = current.indexOfFirst { it.id == alarm.id }
+            if (index >= 0) {
+                current[index] = updated
+                saveAlarmsToPrefs(current)
+            }
+            scheduler.scheduleAlarm(updated)
         } else {
             toggleAlarm(alarm.id, false)
         }
@@ -168,10 +181,20 @@ class AlarmRepository(private val context: Context) {
      */
     @Synchronized
     fun rescheduleAllActiveAlarms() {
-        for (alarm in _alarmsFlow.value) {
+        val current = _alarmsFlow.value.toMutableList()
+        var changed = false
+        for (i in current.indices) {
+            val alarm = current[i]
             if (alarm.isEnabled) {
-                scheduler.scheduleAlarm(alarm)
+                val nextTriggerMs = scheduler.calculateNextTriggerEpochMs(alarm)
+                val updated = alarm.copy(nextTriggerAtMillis = nextTriggerMs)
+                current[i] = updated
+                changed = true
+                scheduler.scheduleAlarm(updated)
             }
+        }
+        if (changed) {
+            saveAlarmsToPrefs(current)
         }
     }
 }

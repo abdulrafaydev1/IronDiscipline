@@ -111,6 +111,10 @@
             android:directBootAware="true">
             <intent-filter>
                 <action android:name="com.irondiscipline.app.ACTION_ALARM_TRIGGER" />
+                <data android:scheme="ironalarm" android:host="trigger" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.irondiscipline.app.ACTION_ALARM_TRIGGER" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.TIME_SET" />

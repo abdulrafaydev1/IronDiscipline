@@ -128,9 +128,11 @@ class AlarmRingingActivity : ComponentActivity() {
         setIntent(intent)
         applyScreenAndLockFlags()
 
-        // Preserve single instance & Math Hard questions; do NOT re-init or reset active session
         val incomingAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
-        if (activeAlarmId == null && incomingAlarmId != null) {
+        val isNewTrigger = intent.getBooleanExtra("EXTRA_IS_NEW_TRIGGER", false)
+
+        if (isNewTrigger || incomingAlarmId != activeAlarmId) {
+            isAlarmDismissed = false
             activeAlarmId = incomingAlarmId
             ActiveAlarmSessionState.initSession(incomingAlarmId)
         }
@@ -182,15 +184,9 @@ class AlarmRingingActivity : ComponentActivity() {
      * and trigger official Android lock-screen unlock flow.
      */
     private fun completeAlarmAndDismiss(alarmId: String?, reason: String = "MATH_SOLVED") {
-        Log.d("AlarmDiag", "[DISMISS_CLEANUP] Reason=$reason, alarmId=$alarmId, audio stopped, vibrator cancelled, WakeLocks released")
+        Log.d("AlarmDiag", "[DISMISS_CLEANUP] Reason=$reason, alarmId=$alarmId")
         isAlarmDismissed = true
-        val repository = AlarmRepository.getInstance(applicationContext)
-        if (alarmId != null) {
-            repository.handleAlarmDismissed(alarmId)
-        }
-        AlarmRingingService.stopRinging(this, alarmId)
-        AlarmWakeLockManager.releaseAll()
-        ActiveAlarmSessionState.clearSession()
+        AlarmRingingService.stopAndCleanup(applicationContext, alarmId)
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && keyguardManager != null && keyguardManager.isKeyguardLocked) {

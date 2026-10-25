@@ -26,11 +26,18 @@ class HardAlarmSoundEngine private constructor() {
 
     private val engineScope = CoroutineScope(Dispatchers.Default)
 
-    private var activeAudioTrack: AudioTrack? = null
+    @Volatile
+    private var isPlaying = false
+
+    @Volatile
     private var playbackThread: Thread? = null
+
+    @Volatile
+    private var currentAudioTrack: AudioTrack? = null
+
     private var previewTimerJob: Job? = null
 
-    private val isPlaying = AtomicBoolean(false)
+    private val lock = Any()
 
     @Volatile
     var currentlyPlayingSoundIndex: Int? = null
@@ -69,13 +76,41 @@ class HardAlarmSoundEngine private constructor() {
     }
 
     /**
-     * Previews the selected sound pattern for 3 seconds and then stops automatically.
+     * Halts all active audio playback immediately with full resource cleanup.
      */
-    @Synchronized
+    fun stopSound() {
+        synchronized(lock) {
+            isPlaying = false
+            currentlyPlayingSoundIndex = null
+
+            previewTimerJob?.cancel()
+            previewTimerJob = null
+
+            playbackThread?.let {
+                it.interrupt()
+                playbackThread = null
+            }
+
+            try {
+                currentAudioTrack?.let { track ->
+                    if (track.state == AudioTrack.STATE_INITIALIZED) {
+                        try { track.pause() } catch (_: Exception) {}
+                        try { track.flush() } catch (_: Exception) {}
+                    }
+                    try { track.release() } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {
+            } finally {
+                currentAudioTrack = null
+            }
+        }
+    }
+
+    /**
+     * Previews the selected sound pattern for 3.2 seconds and then stops automatically.
+     */
     fun previewSound(soundIndex: Int, onComplete: (() -> Unit)? = null) {
-        stopSound()
-        currentlyPlayingSoundIndex = soundIndex
-        startLoopingInternal(soundIndex)
+        playAlarmSound(soundIndex)
 
         previewTimerJob = engineScope.launch {
             delay(3200L)
@@ -85,115 +120,91 @@ class HardAlarmSoundEngine private constructor() {
     }
 
     /**
-     * Loops the selected sound continuously until stopSound() is called (used by AlarmRingingService).
-     * Idempotent: If the same sound is already actively playing, reuses the active track.
-     */
-    @Synchronized
-    fun startLoopingSound(soundIndex: Int) {
-        if (isPlaying.get() && currentlyPlayingSoundIndex == soundIndex && activeAudioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) {
-            Log.d("AlarmDiag", "[AUDIO_START] AudioTrack already playing soundIndex=$soundIndex, reusing active track")
-            return
-        }
-        stopSound()
-        currentlyPlayingSoundIndex = soundIndex
-        startLoopingInternal(soundIndex)
-    }
-
-    /**
-     * Alias for startLoopingSound for explicit API compatibility.
+     * Loops the selected sound continuously with a 100% fresh AudioTrack instance.
+     * Guaranteed never to stick or skip on 2nd, 3rd, or 10th runs.
      */
     fun playAlarmSound(soundIndex: Int) {
-        startLoopingSound(soundIndex)
-    }
+        // ALWAYS stop and clean up any previous session first so 2nd, 3rd, 10th runs NEVER get stuck!
+        stopSound()
 
-    private fun startLoopingInternal(soundIndex: Int) {
-        isPlaying.set(true)
+        synchronized(lock) {
+            isPlaying = true
+            currentlyPlayingSoundIndex = soundIndex
 
-        val soundBuffer = generateSoundPatternBuffer(soundIndex)
-        val minBufferSize = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-        val bufferSize = maxOf(minBufferSize, soundBuffer.size * 2)
+            playbackThread = Thread {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+                var track: AudioTrack? = null
+                try {
+                    val soundBuffer = generateSoundPatternBuffer(soundIndex)
+                    val minBufSize = AudioTrack.getMinBufferSize(
+                        SAMPLE_RATE,
+                        AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT
+                    ).coerceAtLeast(soundBuffer.size * 2)
 
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
 
-        val audioFormat = AudioFormat.Builder()
-            .setSampleRate(SAMPLE_RATE)
-            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-            .build()
+                    val audioFormat = AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
 
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(audioAttributes)
-            .setAudioFormat(audioFormat)
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+                    track = AudioTrack.Builder()
+                        .setAudioAttributes(audioAttributes)
+                        .setAudioFormat(audioFormat)
+                        .setBufferSizeInBytes(minBufSize * 2)
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
 
-        activeAudioTrack = track
+                    currentAudioTrack = track
 
-        try {
-            track.play()
-        } catch (e: Exception) {
-            Log.e("AlarmDiag", "[AUDIO_START] Error starting AudioTrack: ${e.message}")
-            return
-        }
+                    if (track.state != AudioTrack.STATE_INITIALIZED) {
+                        Log.e("AlarmDiag", "[AUDIO_START] AudioTrack failed to initialize (state=${track.state})")
+                        return@Thread
+                    }
 
-        // Dedicated OS thread with THREAD_PRIORITY_URGENT_AUDIO prevents Doze throttling
-        playbackThread = Thread {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            try {
-                while (isPlaying.get() && !Thread.currentThread().isInterrupted) {
-                    val bytesWritten = track.write(soundBuffer, 0, soundBuffer.size, AudioTrack.WRITE_BLOCKING)
-                    if (bytesWritten < 0) {
-                        break
+                    track.play()
+
+                    while (isPlaying && !Thread.currentThread().isInterrupted) {
+                        val written = track.write(soundBuffer, 0, soundBuffer.size, AudioTrack.WRITE_BLOCKING)
+                        if (written < 0) break
+                    }
+                } catch (e: Exception) {
+                    Log.e("AlarmDiag", "[AUDIO_START] AudioTrack playback error", e)
+                } finally {
+                    try {
+                        if (track?.state == AudioTrack.STATE_INITIALIZED) {
+                            try { track?.stop() } catch (_: Exception) {}
+                            try { track?.flush() } catch (_: Exception) {}
+                        }
+                        try { track?.release() } catch (_: Exception) {}
+                    } catch (_: Exception) {}
+                    synchronized(lock) {
+                        if (currentAudioTrack === track) {
+                            currentAudioTrack = null
+                        }
                     }
                 }
-            } catch (_: InterruptedException) {
-                // Thread interrupted on stopSound()
-            } catch (e: Exception) {
-                Log.e("AlarmDiag", "[AUDIO_START] PCM playback loop exception: ${e.message}")
-            } finally {
-                try {
-                    track.stop()
-                    track.release()
-                } catch (_: Exception) {}
+            }.apply {
+                name = "HardAlarmAudioThread-${System.currentTimeMillis()}"
+                isDaemon = true
+                start()
             }
-        }.apply {
-            name = "IronDiscipline-UrgentAudioTrack"
-            isDaemon = true
-            start()
         }
     }
 
     /**
-     * Halts all active audio playback immediately.
+     * Loops the selected sound continuously (alias for playAlarmSound).
      */
-    @Synchronized
-    fun stopSound() {
-        isPlaying.set(false)
-        currentlyPlayingSoundIndex = null
-        previewTimerJob?.cancel()
-        previewTimerJob = null
-
-        playbackThread?.let {
-            it.interrupt()
-            playbackThread = null
-        }
-
-        try {
-            activeAudioTrack?.stop()
-            activeAudioTrack?.release()
-        } catch (_: Exception) {}
-        activeAudioTrack = null
+    fun startLoopingSound(soundIndex: Int) {
+        playAlarmSound(soundIndex)
     }
 
-    fun isCurrentlyPlaying(): Boolean = isPlaying.get()
+    fun isCurrentlyPlaying(): Boolean = isPlaying
 
     /**
      * Synthesizes high-decibel 16-bit PCM waveform buffers for the 12 distinct alarm patterns.

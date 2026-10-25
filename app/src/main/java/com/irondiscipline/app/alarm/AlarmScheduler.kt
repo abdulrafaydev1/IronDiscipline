@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import com.irondiscipline.app.MainActivity
@@ -50,11 +51,13 @@ class AlarmScheduler(private val context: Context) {
         val nextTriggerMs = calculateNextTriggerEpochMs(alarm)
 
         val triggerIntent = Intent(context, AlarmReceiver::class.java).apply {
-            action = ACTION_TRIGGER_ALARM
+            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
+            data = Uri.parse("ironalarm://trigger/${alarm.id}")
             putExtra(EXTRA_ALARM_ID, alarm.id)
             putExtra(EXTRA_ALARM_LABEL, alarm.label)
             putExtra(EXTRA_SOUND_INDEX, alarm.soundIndex)
             putExtra(EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+            putExtra("EXTRA_IS_NEW_TRIGGER", true)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
 
@@ -62,7 +65,7 @@ class AlarmScheduler(private val context: Context) {
             context,
             alarm.id.hashCode(),
             triggerIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val showIntent = Intent(context, MainActivity::class.java)
@@ -107,7 +110,8 @@ class AlarmScheduler(private val context: Context) {
     fun cancelAlarm(alarmId: String) {
         val am = alarmManager ?: return
         val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = ACTION_TRIGGER_ALARM
+            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
+            data = Uri.parse("ironalarm://trigger/$alarmId")
             putExtra(EXTRA_ALARM_ID, alarmId)
         }
         val pendingIntent = PendingIntent.getBroadcast(
@@ -130,8 +134,10 @@ class AlarmScheduler(private val context: Context) {
         val triggerMs = System.currentTimeMillis() + (snoozeMinutes * 60 * 1000L)
 
         val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = ACTION_TRIGGER_ALARM
+            action = "${context.packageName}.ACTION_ALARM_TRIGGER"
+            data = Uri.parse("ironalarm://trigger/${alarm.id}")
             putExtra(EXTRA_ALARM_ID, alarm.id)
+            putExtra("EXTRA_IS_NEW_TRIGGER", true)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
 
@@ -139,7 +145,7 @@ class AlarmScheduler(private val context: Context) {
             context,
             alarm.id.hashCode(),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val showIntent = Intent(context, MainActivity::class.java)

@@ -80,12 +80,37 @@ class AlarmRingingService : Service() {
         @Volatile
         var currentRingingAlarmLabel: String? = null
 
-        fun stopRinging(context: Context, alarmId: String? = null) {
+        fun stopAndCleanup(context: Context, alarmId: String? = null) {
+            val targetAlarmId = alarmId ?: currentRingingAlarmId
+            Log.d("AlarmDiag", "[DISMISS_CLEANUP] stopAndCleanup invoked for alarmId=$targetAlarmId")
+
             isCurrentlyRinging = false
             currentRingingAlarmId = null
             currentRingingAlarmLabel = null
+
+            ActiveAlarmSessionState.clearSession()
+            HardAlarmSoundEngine.getInstance().stopSound()
+            AlarmWakeLockManager.releaseAll()
+
+            val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("is_alarm_currently_ringing", false).commit()
+
+            // Post-ringing storage sync:
+            if (targetAlarmId != null) {
+                try {
+                    val repository = AlarmRepository.getInstance(context)
+                    repository.handleAlarmDismissed(targetAlarmId)
+                } catch (e: Exception) {
+                    Log.e("AlarmDiag", "[DISMISS_CLEANUP] Error in repository handleAlarmDismissed: ${e.message}")
+                }
+            }
+
             val intent = Intent(context, AlarmRingingService::class.java)
             context.stopService(intent)
+        }
+
+        fun stopRinging(context: Context, alarmId: String? = null) {
+            stopAndCleanup(context, alarmId)
         }
 
         fun bringAlarmScreenToFront(context: Context) {
@@ -189,6 +214,11 @@ class AlarmRingingService : Service() {
         isCurrentlyRinging = true
         currentRingingAlarmId = alarmId
         currentRingingAlarmLabel = alarm?.label ?: alarmLabel
+        currentlyRingingAlarmId = alarmId
+
+        if (alarmId != null) {
+            ActiveAlarmSessionState.initSession(alarmId)
+        }
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -199,13 +229,6 @@ class AlarmRingingService : Service() {
             "AlarmDiag",
             "[SERVICE_START] startForeground success, canUseFullScreenIntent=$canFullScreen, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
         )
-
-        // Prevent duplicate playback loops if already ringing for this exact alarm
-        if (currentlyRingingAlarmId != null && currentlyRingingAlarmId == alarmId) {
-            bringAlarmScreenToFront(this)
-            return START_STICKY
-        }
-        currentlyRingingAlarmId = alarmId
 
         // Step C: START AUDIO & VIBRATION IMMEDIATELY (Decoupled from Activity lifecycle)
         val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -262,9 +285,10 @@ class AlarmRingingService : Service() {
 
         // Play Selected High-Decibel Hard Sound
         val soundIndex = alarm?.soundIndex ?: intent?.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0) ?: 0
-        soundEngine.startLoopingSound(soundIndex)
+        soundEngine.playAlarmSound(soundIndex)
 
-        // Heavy Vibration Pulse
+        // Cancel any lingering vibration and start fresh Heavy Vibration Pulse
+        try { vibrator?.cancel() } catch (_: Exception) {}
         startHeavyVibration()
 
         val currentVol = am?.getStreamVolume(AudioManager.STREAM_ALARM) ?: -1
@@ -379,6 +403,13 @@ class AlarmRingingService : Service() {
         // Release Anti-Cheat flag
         val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("is_alarm_currently_ringing", false).commit()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
 
         super.onDestroy()
     }

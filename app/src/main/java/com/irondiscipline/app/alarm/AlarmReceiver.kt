@@ -50,18 +50,20 @@ class AlarmReceiver : BroadcastReceiver() {
         when (action) {
             AlarmScheduler.ACTION_DISMISS_ALARM -> {
                 Log.d("AlarmDiag", "[RECEIVER] Dismiss action for alarmId=$alarmId")
-                val repository = AlarmRepository.getInstance(context)
-                repository.handleAlarmDismissed(alarmId)
-                AlarmRingingService.stopRinging(context, alarmId)
+                AlarmRingingService.stopAndCleanup(context, alarmId)
             }
 
             AlarmScheduler.ACTION_SNOOZE_ALARM -> {
                 // Snooze is permanently disabled under IronDiscipline protocols
                 Log.d("AlarmDiag", "[RECEIVER] Snooze action (disabled) for alarmId=$alarmId")
-                AlarmRingingService.stopRinging(context, alarmId)
+                AlarmRingingService.stopAndCleanup(context, alarmId)
             }
 
-            AlarmScheduler.ACTION_TRIGGER_ALARM, "com.irondiscipline.app.alarm.TRIGGER_ALARM", null -> {
+            AlarmScheduler.ACTION_TRIGGER_ALARM, "${context.packageName}.ACTION_ALARM_TRIGGER", "com.irondiscipline.app.alarm.TRIGGER_ALARM", null -> {
+                // Record timestamp to avoid duplicate triggers within 60s from watchdog
+                val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+                prefs.edit().putLong("last_triggered_timestamp_$alarmId", System.currentTimeMillis()).commit()
+
                 // Initialize persistent Math Hard questions session state for this alarm
                 ActiveAlarmSessionState.initSession(alarmId)
 
@@ -71,13 +73,9 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
                     putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
                     putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
+                    putExtra("EXTRA_IS_NEW_TRIGGER", true)
                 }
                 ContextCompat.startForegroundService(context, serviceIntent)
-
-                // Note: Background startActivity is deliberately omitted here.
-                // On Android 10+ background activity starts from BroadcastReceiver are restricted
-                // or delayed when screen is locked/OFF. AlarmRingingService promotes to foreground
-                // within milliseconds, immediately starts sound and vibration, and brings the activity to front!
             }
         }
     }

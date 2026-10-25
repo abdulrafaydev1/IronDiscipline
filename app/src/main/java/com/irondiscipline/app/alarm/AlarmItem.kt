@@ -23,7 +23,8 @@ data class AlarmItem(
     val snoozeMinutes: Int = 0, // Forced 0
     val vibrateWhileRinging: Boolean = true, // Forced ON
     val dismissChallenge: String = "MATH_HARD", // Forced MATH_HARD
-    val maxVolumeOverride: Boolean = true // Forced ON
+    val maxVolumeOverride: Boolean = true, // Forced ON
+    val nextTriggerAtMillis: Long = 0L
 ) {
     fun getFormattedTime(is24Hour: Boolean = false): String {
         val cal = Calendar.getInstance().apply {
@@ -80,6 +81,7 @@ data class AlarmItem(
             put("vibrateWhileRinging", vibrateWhileRinging)
             put("dismissChallenge", dismissChallenge)
             put("maxVolumeOverride", maxVolumeOverride)
+            put("nextTriggerAtMillis", nextTriggerAtMillis)
 
             val daysArray = JSONArray()
             repeatDays.forEach { daysArray.put(it) }
@@ -110,7 +112,8 @@ data class AlarmItem(
                 snoozeMinutes = 0,
                 vibrateWhileRinging = true,
                 dismissChallenge = "MATH_HARD",
-                maxVolumeOverride = true
+                maxVolumeOverride = true,
+                nextTriggerAtMillis = json.optLong("nextTriggerAtMillis", 0L)
             )
         }
     }

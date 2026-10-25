@@ -2,6 +2,7 @@ package com.irondiscipline.app.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -10,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,6 +19,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -31,6 +34,10 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.irondiscipline.app.IronDisciplineApp
+import com.irondiscipline.app.alarm.AlarmReceiver
+import com.irondiscipline.app.alarm.AlarmRepository
+import com.irondiscipline.app.alarm.AlarmRingingService
+import com.irondiscipline.app.alarm.AlarmScheduler
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.RealtimeQuotaManager
 import java.time.LocalDate
@@ -80,6 +87,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         override fun run() {
             try {
                 tickOneSecond()
+                checkBackupAlarmWatchdog()
             } catch (_: Exception) {}
             mainHandler.postDelayed(this, 1000L)
         }
@@ -387,6 +395,57 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         try {
             windowManager?.removeViewImmediate(pill)
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Fail-Safe Backup Alarm Watchdog (Dual-Engine Protection):
+     * Runs every second in the persistent Accessibility Service.
+     * If Android AlarmManager or Doze mode delays the alarm by even 2-3 seconds,
+     * this watchdog detects that an active alarm's triggerAtMillis has arrived,
+     * and immediately fires the alarm broadcast to wake the device.
+     */
+    private fun checkBackupAlarmWatchdog() {
+        try {
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (AlarmRingingService.isCurrentlyRinging || prefs.getBoolean("is_alarm_currently_ringing", false)) {
+                return
+            }
+
+            val now = System.currentTimeMillis()
+            val alarms = AlarmRepository.getInstance(applicationContext).alarmsFlow.value
+
+            for (alarm in alarms) {
+                if (!alarm.isEnabled) continue
+                val triggerAt = alarm.nextTriggerAtMillis
+                if (triggerAt <= 0L) continue
+
+                // Check if trigger time has arrived (within 45-second window)
+                if (now >= triggerAt && (now - triggerAt) <= 45_000L) {
+                    val lastTriggeredKey = "last_triggered_timestamp_${alarm.id}"
+                    val lastTriggered = prefs.getLong(lastTriggeredKey, 0L)
+
+                    // Ensure this alarm hasn't fired in the last 60 seconds
+                    if (now - lastTriggered > 60_000L) {
+                        prefs.edit().putLong(lastTriggeredKey, now).commit()
+                        Log.i("AlarmDiag", "[WATCHDOG] Backup watchdog triggering alarm ID=${alarm.id}, drift=${now - triggerAt}ms")
+
+                        val triggerIntent = Intent(applicationContext, AlarmReceiver::class.java).apply {
+                            action = "${packageName}.ACTION_ALARM_TRIGGER"
+                            data = Uri.parse("ironalarm://trigger/${alarm.id}")
+                            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
+                            putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm.label)
+                            putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm.soundIndex)
+                            putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+                            putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                        }
+                        sendBroadcast(triggerIntent)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("AlarmDiag", "[WATCHDOG] Error in watchdog tick: ${e.message}")
+        }
     }
 
     /**
