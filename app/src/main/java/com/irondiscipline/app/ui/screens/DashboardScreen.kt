@@ -1,14 +1,26 @@
 package com.irondiscipline.app.ui.screens
 
 import android.content.Context
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,11 +34,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -34,34 +44,52 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.domain.model.PermissionStatusState
-import com.irondiscipline.app.ui.theme.DarkBg
-import com.irondiscipline.app.ui.theme.DarkBorder
-import com.irondiscipline.app.ui.theme.DarkCard
-import com.irondiscipline.app.ui.theme.DarkSurface
-import com.irondiscipline.app.ui.theme.NeonAmber
-import com.irondiscipline.app.ui.theme.NeonCrimson
-import com.irondiscipline.app.ui.theme.NeonCyan
-import com.irondiscipline.app.ui.theme.NeonLime
-import com.irondiscipline.app.ui.theme.TextMuted
-import com.irondiscipline.app.ui.theme.TextPrimary
-import com.irondiscipline.app.ui.theme.TextSecondary
 import com.irondiscipline.app.util.CoreAppQuotaStatus
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.PermissionHelper
 import com.irondiscipline.app.util.RealtimeQuotaSnapshot
+
+// Obsidian Cyber-Discipline Color Palette
+private val ColorObsidianDeep = Color(0xFF06080E)
+private val ColorObsidianSlate = Color(0xFF0D121D)
+private val ColorElevatedSlate = Color(0xFF141B29)
+private val ColorCardBorderStart = Color(0xFF26334D)
+private val ColorCardBorderEnd = Color(0xFF141B29)
+
+private val ColorElectricEmerald = Color(0xFF00E676)
+private val ColorEmeraldDark = Color(0xFF10B981)
+private val ColorCyberAmber = Color(0xFFFFB300)
+private val ColorAmberDark = Color(0xFFF59E0B)
+private val ColorCrimsonNeon = Color(0xFFFF2E54)
+private val ColorCrimsonDark = Color(0xFFDC2626)
+
+private val ColorTextPrimary = Color(0xFFFFFFFF)
+private val ColorTextSecondary = Color(0xFF8A99AD)
+private val ColorTextMuted = Color(0xFF5E6D82)
+
+// App Brand Gradient Definitions
+private val YouTubeGradient = listOf(Color(0xFFFF0033), Color(0xFFCC0000))
+private val InstagramGradient = listOf(Color(0xFFF58529), Color(0xFFDD2A7B), Color(0xFF8134AF))
+private val FacebookGradient = listOf(Color(0xFF1877F2), Color(0xFF0C5DC7))
+private val TikTokGradient = listOf(Color(0xFF00F2FE), Color(0xFFFE0979))
 
 @Composable
 fun DashboardScreen(
@@ -77,54 +105,82 @@ fun DashboardScreen(
     val scrollState = rememberScrollState()
     val isTestMode = realtimeQuotaState.isTestModeActive
 
+    // Calculate aggregated daily statistics for the Hero Gauge
+    val totalLimitSeconds = realtimeQuotaState.coreStatuses.sumOf { it.limitSeconds }.coerceAtLeast(1)
+    val totalUsedSeconds = realtimeQuotaState.coreStatuses.sumOf { it.usedSeconds }
+    val totalRemainingSeconds = (totalLimitSeconds - totalUsedSeconds).coerceAtLeast(0)
+    val remainingFraction = (totalRemainingSeconds.toFloat() / totalLimitSeconds.toFloat()).coerceIn(0f, 1f)
+    val remainingPercent = (remainingFraction * 100).toInt()
+    val unlockedCount = realtimeQuotaState.coreStatuses.count { !it.isLocked }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(ColorObsidianDeep, ColorObsidianSlate)
+                )
+            )
             .verticalScroll(scrollState)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Permission Check Card (Appears if Accessibility or Overlay is missing)
+        // 1. Top "Command Header" & Live Animated Shield Status Pill
+        CommandHeaderSection(
+            permissionState = permissionState
+        )
+
+        // 2. Hero Motivational & Daily Focus Banner Card (with Circular Discipline Gauge)
+        HeroDisciplineBannerCard(
+            unlockedCount = unlockedCount,
+            totalAppsCount = CoreTargetApp.entries.size,
+            remainingFraction = remainingFraction,
+            remainingPercent = remainingPercent,
+            isTestMode = isTestMode
+        )
+
+        // 3. Sleek Permission Alert Card (Conditional: shown only if critical permissions missing)
         if (!permissionState.allCriticalGranted) {
-            PermissionSetupCard(
+            SleekPermissionAlertCard(
                 context = context,
                 permissionState = permissionState,
                 onRefreshPermissions = onRefreshPermissions
             )
-        } else {
-            ShieldActiveStatusBanner()
         }
 
-        // 2. Mode & Test Control Bar
-        ModeAndTestControlCard(
+        // 4. Tactical Control Capsule (30-Min Strict Mode vs. 1-Min Test Mode + Reset All)
+        TacticalControlCapsule(
             isTestMode = isTestMode,
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
             onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode,
             onResetAllTimers = onResetAllTimers
         )
 
-        // 3. Section Title
+        // 5. Section Header
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "TARGET APPLICATIONS (4)",
-                color = TextSecondary,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.1.sp
+                text = "FLAGSHIP TARGET APPLICATIONS (4)",
+                color = ColorTextSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.2.sp
             )
             Text(
-                text = if (isTestMode) "1-MIN TEST LIMIT" else "FIXED 30-MIN LIMIT",
-                color = if (isTestMode) NeonAmber else NeonCyan,
+                text = if (isTestMode) "DIAGNOSTIC 1-MIN" else "STRICT 30-MIN",
+                color = if (isTestMode) ColorCyberAmber else ColorElectricEmerald,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Black
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.5.sp
             )
         }
 
-        // 4. Four Individual App Status Cards (YouTube, Facebook, Instagram, TikTok)
+        // 6. Premium Per-App Cards (YouTube, Facebook, Instagram, TikTok)
         for (target in CoreTargetApp.entries) {
             val status = realtimeQuotaState.statusFor(target.appKey) ?: CoreAppQuotaStatus(
                 target = target,
@@ -136,22 +192,248 @@ fun DashboardScreen(
                 lockRemainingMillis = 0L
             )
 
-            FixedAppQuotaCard(
+            PremiumAppDisciplineCard(
                 status = status,
                 isTestMode = isTestMode,
                 onResetApp = { onResetSingleApp(target.appKey) }
             )
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
 /**
- * Clean permission setup card shown prominently when critical permissions are missing.
+ * 1. Top "Command Header" with pulsating Live Shield Status Pill.
  */
 @Composable
-private fun PermissionSetupCard(
+private fun CommandHeaderSection(
+    permissionState: PermissionStatusState
+) {
+    val isShieldArmed = permissionState.allCriticalGranted
+
+    // Pulsing alpha animation for the status dot
+    val infiniteTransition = rememberInfiniteTransition(label = "ShieldPulse")
+    val dotAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "PulseAlpha"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text(
+                text = "IRON DISCIPLINE",
+                color = ColorTextPrimary,
+                fontWeight = FontWeight.Black,
+                fontSize = 22.sp,
+                letterSpacing = 1.5.sp
+            )
+            Text(
+                text = "PERSONAL FOCUS COMMAND CENTER",
+                color = ColorTextSecondary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                letterSpacing = 1.0.sp
+            )
+        }
+
+        // Animated Shield Status Pill
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    if (isShieldArmed) Color(0x1A00E676) else Color(0x26FFB300)
+                )
+                .border(
+                    width = 1.dp,
+                    color = if (isShieldArmed) ColorElectricEmerald.copy(alpha = 0.5f) else ColorCyberAmber.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(14.dp)
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .alpha(dotAlpha)
+                        .background(if (isShieldArmed) ColorElectricEmerald else ColorCyberAmber)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isShieldArmed) "SHIELD ACTIVE" else "SETUP REQUIRED",
+                    color = if (isShieldArmed) ColorElectricEmerald else ColorCyberAmber,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.8.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 2. Hero Motivational & Daily Focus Banner Card with Circular Discipline Gauge.
+ */
+@Composable
+private fun HeroDisciplineBannerCard(
+    unlockedCount: Int,
+    totalAppsCount: Int,
+    remainingFraction: Float,
+    remainingPercent: Int,
+    isTestMode: Boolean
+) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = remainingFraction,
+        animationSpec = tween(durationMillis = 700),
+        label = "HeroGaugeProgress"
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF2E3E60), Color(0xFF182233))
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+    ) {
+        Box(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(Color(0xFF182236), Color(0xFF0F1524))
+                    )
+                )
+                .padding(20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Left Column: Motivational Copy & Stats
+                Column(modifier = Modifier.weight(1f)) {
+                    // Tagline Chip
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0x2600E676))
+                            .border(0.8.dp, Color(0x6600E676), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "MINDSET OVER IMPULSE",
+                            color = ColorElectricEmerald,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 9.sp,
+                            letterSpacing = 1.1.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "Guard Your Time.\nBuild Your Empire.",
+                        color = ColorTextPrimary,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 19.sp,
+                        lineHeight = 25.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "$unlockedCount OF $totalAppsCount APPS UNLOCKED • FOCUS STRONG",
+                        color = ColorTextSecondary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        letterSpacing = 0.8.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                // Right Column: Circular Discipline Gauge
+                Box(
+                    modifier = Modifier.size(76.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(modifier = Modifier.size(76.dp)) {
+                        val strokeWidth = 7.dp.toPx()
+
+                        // Background ring track
+                        drawArc(
+                            color = Color(0xFF1F2B40),
+                            startAngle = 0f,
+                            sweepAngle = 360f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                        )
+
+                        // Glowing sweep progress
+                        val gaugeGradient = Brush.sweepGradient(
+                            listOf(
+                                ColorElectricEmerald,
+                                Color(0xFF00F5D4),
+                                ColorElectricEmerald
+                            )
+                        )
+
+                        drawArc(
+                            brush = gaugeGradient,
+                            startAngle = -90f,
+                            sweepAngle = 360f * animatedProgress,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "$remainingPercent%",
+                            color = ColorTextPrimary,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            text = "LEFT",
+                            color = ColorTextSecondary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 3. Sleek Permission Alert Card (Conditional).
+ */
+@Composable
+private fun SleekPermissionAlertCard(
     context: Context,
     permissionState: PermissionStatusState,
     onRefreshPermissions: () -> Unit
@@ -159,189 +441,161 @@ private fun PermissionSetupCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.5.dp, NeonAmber, RoundedCornerShape(18.dp)),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkCard)
+            .border(
+                width = 1.5.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(ColorCyberAmber, ColorAmberDark)
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.WarningAmber,
-                    contentDescription = null,
-                    tint = NeonAmber,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "Permissions Setup Required",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 15.sp
+        Box(
+            modifier = Modifier
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xFF22170A), Color(0xFF160E06))
                     )
+                )
+                .padding(18.dp)
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.WarningAmber,
+                        contentDescription = null,
+                        tint = ColorCyberAmber,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Shield Permissions Required",
+                            color = ColorTextPrimary,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            text = "Enable required permissions to detect & lock distracting apps.",
+                            color = ColorCyberAmber.copy(alpha = 0.9f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (!permissionState.isAccessibilityServiceEnabled) {
+                    Button(
+                        onClick = {
+                            context.startActivity(PermissionHelper.createAccessibilitySettingsIntent())
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ColorCyberAmber,
+                            contentColor = ColorObsidianDeep
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccessibilityNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Enable Accessibility Service",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                if (!permissionState.hasOverlayPermission) {
+                    Button(
+                        onClick = {
+                            context.startActivity(PermissionHelper.createOverlayPermissionIntent(context))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF00F5D4),
+                            contentColor = ColorObsidianDeep
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Layers,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Enable Overlay Permission",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                OutlinedButton(
+                    onClick = onRefreshPermissions,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF3B4860))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = ColorTextSecondary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Enable required permissions to detect & block target apps.",
-                        color = TextSecondary,
+                        text = "Verify Permission Status",
+                        color = ColorTextSecondary,
+                        fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Accessibility Service Action Button
-            if (!permissionState.isAccessibilityServiceEnabled) {
-                Button(
-                    onClick = {
-                        context.startActivity(PermissionHelper.createAccessibilitySettingsIntent())
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = NeonAmber,
-                        contentColor = DarkBg
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AccessibilityNew,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Enable Accessibility Service",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 13.sp
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Display Over Other Apps Action Button
-            if (!permissionState.hasOverlayPermission) {
-                Button(
-                    onClick = {
-                        context.startActivity(PermissionHelper.createOverlayPermissionIntent(context))
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = NeonCyan,
-                        contentColor = DarkBg
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Layers,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Enable Overlay Permission",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 13.sp
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Refresh Status Button
-            OutlinedButton(
-                onClick = onRefreshPermissions,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Check Permission Status",
-                    color = TextSecondary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
-                )
-            }
         }
     }
 }
 
 /**
- * Compact banner shown when all permissions are granted and the shield is active.
+ * 4. Tactical Control Capsule (30-Min Strict Mode vs. 1-Min Test Mode).
  */
 @Composable
-private fun ShieldActiveStatusBanner() {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, NeonLime.copy(alpha = 0.4f), RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkCard)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(NeonLime)
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Icon(
-                imageVector = Icons.Default.Shield,
-                contentDescription = null,
-                tint = NeonLime,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = "Focus Shield Armed & Monitoring",
-                    color = TextPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Auto-blocks each app after 30 mins with zero sound leak.",
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
-            }
-        }
-    }
-}
-
-/**
- * Mode & Test Control Bar.
- * - Displays active rule: "Fixed Limit: 30 Mins Per App" or "Test Mode: 1 Min Per App"
- * - Button 1: Toggle between 1-Min Test Mode and Fixed 30-Min Normal Mode
- * - Button 2: Reset All App Timers
- */
-@Composable
-private fun ModeAndTestControlCard(
+private fun TacticalControlCapsule(
     isTestMode: Boolean,
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit,
     onResetAllTimers: () -> Unit
 ) {
-    val borderColor = if (isTestMode) NeonAmber else NeonCyan
+    val modeAccentColor by animateColorAsState(
+        targetValue = if (isTestMode) ColorCyberAmber else ColorElectricEmerald,
+        animationSpec = tween(400),
+        label = "ModeAccentColor"
+    )
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.5.dp, borderColor, RoundedCornerShape(18.dp)),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkCard)
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(ColorCardBorderStart, ColorCardBorderEnd)
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = ColorElevatedSlate)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Header Row: Active Rule display + Status Badge
+            // Mode Header Badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -351,120 +605,80 @@ private fun ModeAndTestControlCard(
                     Icon(
                         imageVector = if (isTestMode) Icons.Default.Bolt else Icons.Default.Shield,
                         contentDescription = null,
-                        tint = if (isTestMode) NeonAmber else NeonCyan,
-                        modifier = Modifier.size(22.dp)
+                        tint = modeAccentColor,
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = if (isTestMode) "Test Mode: 1 Min Per App" else "Fixed Limit: 30 Mins Per App",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 15.sp
-                        )
-                        Text(
-                            text = if (isTestMode) "Testing active: apps lock after 60 seconds." else "Strict daily quota enforced per app.",
-                            color = TextSecondary,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isTestMode) NeonAmber.copy(alpha = 0.2f) else NeonCyan.copy(alpha = 0.2f))
-                        .border(1.dp, if (isTestMode) NeonAmber else NeonCyan, RoundedCornerShape(8.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
                     Text(
-                        text = if (isTestMode) "1-MIN TEST" else "30-MIN FIXED",
-                        color = if (isTestMode) NeonAmber else NeonCyan,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold
+                        text = if (isTestMode) "⚡ DIAGNOSTIC TEST: 1 MIN / APP" else "🛡️ STRICT PROTOCOL: 30 MINS / APP",
+                        color = modeAccentColor,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.8.sp
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Action Buttons
+            // Two Sleek Tactile Pill Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Button 1: Toggle Mode
-                if (isTestMode) {
-                    Button(
-                        onClick = onSwitchBackToNormalThirtyMinMode,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NeonCyan,
-                            contentColor = DarkBg
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Shield,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Set 30-Min Mode",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 12.sp
-                        )
-                    }
-                } else {
-                    Button(
-                        onClick = onActivateOneMinuteTestMode,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NeonAmber,
-                            contentColor = DarkBg
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Bolt,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "⚡ 1-Min Test Mode",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
-                // Button 2: Reset All App Timers
+                // Button 1: Mode Switch
                 Button(
-                    onClick = onResetAllTimers,
+                    onClick = {
+                        if (isTestMode) onSwitchBackToNormalThirtyMinMode() else onActivateOneMinuteTestMode()
+                    },
                     modifier = Modifier
-                        .weight(1f)
-                        .height(44.dp),
-                    shape = RoundedCornerShape(12.dp),
+                        .weight(1.2f)
+                        .height(46.dp),
+                    shape = RoundedCornerShape(13.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = NeonLime,
-                        contentColor = DarkBg
+                        containerColor = if (isTestMode) Color(0xFF1E283A) else Color(0xFF261D0E),
+                        contentColor = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
+                    ),
+                    border = BorderStroke(
+                        width = 1.2.dp,
+                        color = if (isTestMode) ColorElectricEmerald else ColorCyberAmber
                     )
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Refresh,
+                        imageVector = if (isTestMode) Icons.Default.Shield else Icons.Default.Bolt,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Reset All Timers",
+                        text = if (isTestMode) "Set 30-Min Mode" else "1-Min Test Mode",
                         fontWeight = FontWeight.Black,
+                        fontSize = 12.sp
+                    )
+                }
+
+                // Button 2: Outlined Dark Metallic Reset Button
+                Button(
+                    onClick = onResetAllTimers,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF182030),
+                        contentColor = ColorTextPrimary
+                    ),
+                    border = BorderStroke(1.dp, Color(0xFF334460))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Reset Timers",
+                        fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
                 }
@@ -474,177 +688,219 @@ private fun ModeAndTestControlCard(
 }
 
 /**
- * 4 Individual App Status Cards (YouTube, Facebook, Instagram, TikTok).
- * Cleanly displays:
- * - App Name
- * - Fixed Allowance Badge: "Fixed Time: 30 Mins" (or "Test Time: 1 Min")
- * - Live Remaining Time Today: "MM:SS remaining" (updates every second)
- * - Current Status: "ACTIVE / UNLOCKED" (Green) or "BLOCKED (Unlocks in HH:MM:SS)" (Red)
+ * 5. Premium Per-App Flagship Cards (YouTube, Facebook, Instagram, TikTok).
  */
 @Composable
-private fun FixedAppQuotaCard(
+private fun PremiumAppDisciplineCard(
     status: CoreAppQuotaStatus,
     isTestMode: Boolean,
     onResetApp: () -> Unit
 ) {
     val isLocked = status.isLocked
-    val cardBorderColor = if (isLocked) NeonCrimson else DarkBorder
+
+    // Resolve Brand Gradient and Monogram
+    val brandGradient = when (status.target) {
+        CoreTargetApp.YOUTUBE -> YouTubeGradient
+        CoreTargetApp.INSTAGRAM -> InstagramGradient
+        CoreTargetApp.FACEBOOK -> FacebookGradient
+        CoreTargetApp.TIKTOK -> TikTokGradient
+    }
+
+    val monogramText = when (status.target) {
+        CoreTargetApp.YOUTUBE -> "YT"
+        CoreTargetApp.INSTAGRAM -> "IG"
+        CoreTargetApp.FACEBOOK -> "FB"
+        CoreTargetApp.TIKTOK -> "TT"
+    }
+
+    // Card border: Crimson glow when locked, otherwise subtle obsidian gradient
+    val cardBorder = if (isLocked) {
+        BorderStroke(1.5.dp, ColorCrimsonNeon)
+    } else {
+        BorderStroke(
+            1.dp,
+            Brush.linearGradient(listOf(ColorCardBorderStart, ColorCardBorderEnd))
+        )
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.5.dp, cardBorderColor, RoundedCornerShape(18.dp)),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkCard)
+            .border(border = cardBorder, shape = RoundedCornerShape(20.dp)),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = ColorElevatedSlate)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Header Row: App Name + Fixed Allowance Badge + Status
+        Column(modifier = Modifier.padding(18.dp)) {
+            // Row 1: Brand Monogram Badge + Title & Allowance + Status Pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Custom Brand Monogram Badge
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (isLocked) NeonCrimson.copy(alpha = 0.2f) else NeonCyan.copy(alpha = 0.2f)
-                            ),
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Brush.linearGradient(brandGradient)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Shield,
-                            contentDescription = null,
-                            tint = if (isLocked) NeonCrimson else NeonCyan,
-                            modifier = Modifier.size(20.dp)
+                        Text(
+                            text = monogramText,
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 15.sp,
+                            letterSpacing = 0.5.sp
                         )
                     }
-                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
                     Column {
                         Text(
                             text = status.target.displayName,
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 17.sp
+                            color = ColorTextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
                         )
-                        // Fixed Allowance Badge
                         Text(
-                            text = if (isTestMode) "Test Time: 1 Min" else "Fixed Time: 30 Mins",
-                            color = if (isTestMode) NeonAmber else NeonCyan,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            text = if (isTestMode) "Test Allowance • 1 Min" else "Daily Allowance • 30 Mins",
+                            color = ColorTextSecondary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 11.sp
                         )
                     }
                 }
 
-                // Current Status Badge: ACTIVE / UNLOCKED (Green) or BLOCKED (Red)
+                // Glowing Status Badge
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .background(
-                            if (isLocked) NeonCrimson.copy(alpha = 0.18f) else NeonLime.copy(alpha = 0.18f)
+                            if (isLocked) Color(0x26FF2E54) else Color(0x1A00E676)
                         )
                         .border(
-                            1.dp,
-                            if (isLocked) NeonCrimson else NeonLime,
-                            RoundedCornerShape(8.dp)
+                            width = 1.dp,
+                            color = if (isLocked) ColorCrimsonNeon else ColorElectricEmerald,
+                            shape = RoundedCornerShape(8.dp)
                         )
-                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = if (isLocked) {
-                            "BLOCKED (${status.formattedLockRemainingHhMmSs})"
-                        } else {
-                            "ACTIVE / UNLOCKED"
-                        },
-                        color = if (isLocked) NeonCrimson else NeonLime,
+                        text = if (isLocked) "LOCKED" else "UNLOCKED",
+                        color = if (isLocked) ColorCrimsonNeon else ColorElectricEmerald,
+                        fontWeight = FontWeight.Black,
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = if (isLocked) FontFamily.Monospace else FontFamily.Default
+                        letterSpacing = 0.8.sp
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            // Live Remaining Time Today
+            // Row 2: Big Digital Readout & Countdown
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom
             ) {
-                Text(
-                    text = if (isLocked) {
-                        "Usage time exhausted (Limit: ${status.formattedLimitMinutes})"
-                    } else {
-                        "${status.formattedRemainingMmSs} remaining"
-                    },
-                    color = if (isLocked) NeonCrimson else TextPrimary,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
-                )
+                // Left: Time Remaining Today
+                Column {
+                    Text(
+                        text = "TIME REMAINING TODAY",
+                        color = ColorTextSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.0.sp
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = if (isLocked) "00:00" else status.formattedRemainingMmSs,
+                        color = if (isLocked) ColorCrimsonNeon else ColorTextPrimary,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.0.sp
+                    )
+                }
 
-                Text(
-                    text = "${status.usedSeconds}s used / ${status.limitSeconds / 60}m limit",
-                    color = TextMuted,
-                    fontSize = 12.sp
-                )
+                // Right: Countdown or Usage Stats
+                Column(horizontalAlignment = Alignment.End) {
+                    if (isLocked) {
+                        Text(
+                            text = "UNLOCKS IN",
+                            color = ColorCrimsonNeon,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.0.sp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = status.formattedLockRemainingHhMmSs,
+                            color = ColorCrimsonNeon,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    } else {
+                        Text(
+                            text = "${status.usedSeconds}s used",
+                            color = ColorTextMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        // Mini Reset Action
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF1B2436))
+                                .border(0.8.dp, Color(0xFF2E3D56), RoundedCornerShape(6.dp))
+                                .clickable { onResetApp() }
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "↺ Reset",
+                                color = ColorElectricEmerald,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Progress Bar
-            LinearProgressIndicator(
-                progress = { status.progressFraction },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = if (isLocked) NeonCrimson else NeonCyan,
-                trackColor = DarkSurface
+            // Row 3: Bottom Animated Progress Bar
+            val animatedFraction by animateFloatAsState(
+                targetValue = status.progressFraction,
+                animationSpec = tween(500),
+                label = "AppProgress"
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            // Select fill brush: Crimson when locked, Amber when >80% used, else brand/emerald
+            val fillBrush = when {
+                isLocked -> Brush.linearGradient(listOf(ColorCrimsonNeon, ColorCrimsonDark))
+                status.progressFraction >= 0.8f -> Brush.linearGradient(listOf(ColorCyberAmber, ColorAmberDark))
+                else -> Brush.linearGradient(listOf(ColorElectricEmerald, ColorEmeraldDark))
+            }
 
-            // Footer Row: Reset single app
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF0B0F17))
             ) {
-                Text(
-                    text = if (isLocked) {
-                        "🚫 Locked until midnight (or reset)"
-                    } else {
-                        "Independent 30-min allowance"
-                    },
-                    color = if (isLocked) NeonCrimson.copy(alpha = 0.8f) else TextMuted,
-                    fontSize = 11.sp
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(animatedFraction.coerceIn(0.01f, 1f))
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(fillBrush)
                 )
-
-                OutlinedButton(
-                    onClick = onResetApp,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Reset",
-                        tint = NeonLime,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Reset App",
-                        color = NeonLime,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
             }
         }
     }

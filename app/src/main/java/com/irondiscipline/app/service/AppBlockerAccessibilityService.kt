@@ -385,9 +385,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         if (overlayRootView != null) {
-            blockedAppHeaderTextView?.text = "🚫 $appName Block Ho Gaya Hai!"
-            blockedAppSubtitleTextView?.text = "Aap ka $appName ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
-            countdownLabelTextView?.text = "$appName unlock hone mein baqi waqt:"
+            blockedAppHeaderTextView?.text = "$appName Block Ho Gaya Hai"
+            countdownLabelTextView?.text = "UNLOCK HONE MEIN BAQI WAQT"
             updateOverlayLiveCountdownText(coreTarget.appKey, nowMs)
             return
         }
@@ -456,7 +455,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Builds the required App-Specific Full-Screen Native Overlay (#0D1117 background, #161B22 red warning card).
+     * Builds the required App-Specific Full-Screen Native Vault Overlay (Obsidian Cyber-Discipline theme).
      */
     private fun buildNativeBlockOverlayView(
         appName: String,
@@ -471,11 +470,14 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 return super.dispatchKeyEvent(event)
             }
         }.apply {
-            setBackgroundColor(Color.parseColor("#0D1117"))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#05070B"), Color.parseColor("#12080E"))
+            )
             isClickable = true
             isFocusable = true
             isFocusableInTouchMode = true
-            setPadding(dp(24), dp(32), dp(24), dp(32))
+            setPadding(dp(20), dp(32), dp(20), dp(32))
         }
 
         val cardContainer = LinearLayout(this).apply {
@@ -483,9 +485,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER_HORIZONTAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(22).toFloat()
-                setColor(Color.parseColor("#161B22"))
-                setStroke(dp(2), Color.parseColor("#FF2A54"))
+                cornerRadius = dp(28).toFloat()
+                setColor(Color.parseColor("#161B26"))
+                setStroke(dp(2), Color.parseColor("#FF2E54"))
             }
             setPadding(dp(24), dp(28), dp(24), dp(28))
         }
@@ -497,40 +499,95 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
         }
 
-        // 1. Header Title: "🚫 [AppName] Block Ho Gaya Hai!"
+        // 1. Top Red Shield / Lock Badge (Circular Glowing Badge)
+        val badgeFrame = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#2A121E"))
+                setStroke(dp(1), Color.parseColor("#FF2E54"))
+            }
+        }
+        val badgeTv = TextView(this).apply {
+            text = "🔒"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            gravity = Gravity.CENTER
+        }
+        val badgeFrameParams = LinearLayout.LayoutParams(dp(54), dp(54)).apply {
+            bottomMargin = dp(14)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        badgeFrame.addView(
+            badgeTv,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply { gravity = Gravity.CENTER }
+        )
+        cardContainer.addView(badgeFrame, badgeFrameParams)
+
+        // 2. Focus Lock Engaged Tracking Badge
+        val trackingBadgeTv = TextView(this).apply {
+            text = "FOCUS LOCK ENGAGED"
+            setTextColor(Color.parseColor("#FF2E54"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.15f
+            gravity = Gravity.CENTER
+        }
+        cardContainer.addView(trackingBadgeTv)
+
+        // 3. Main Title: "[AppName] Block Ho Gaya Hai"
         val headerTv = TextView(this).apply {
-            text = "🚫 $appName Block Ho Gaya Hai!"
-            setTextColor(Color.parseColor("#FF2A54"))
+            text = "$appName Block Ho Gaya Hai"
+            setTextColor(Color.parseColor("#FFFFFF"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, dp(12))
         }
         blockedAppHeaderTextView = headerTv
         cardContainer.addView(headerTv)
 
-        // 2. Subtitle: "Aap ka [AppName] ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
-        val subtitleTv = TextView(this).apply {
-            text = "Aap ka $appName ka usage time pura ho chuka hai. Baqi apps apne time ke mutabiq khuli hain."
-            setTextColor(Color.parseColor("#F0F6FC"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            gravity = Gravity.CENTER
-            setLineSpacing(dp(4).toFloat(), 1.0f)
-            setPadding(dp(8), dp(10), dp(8), dp(20))
+        // 4. Motivational Quote Capsule Box
+        val quoteBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#0D1118"))
+                setStroke(dp(1), Color.parseColor("#232B3B"))
+            }
+            setPadding(dp(14), dp(10), dp(14), dp(10))
         }
-        blockedAppSubtitleTextView = subtitleTv
-        cardContainer.addView(subtitleTv)
+        val quoteBoxParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = dp(20)
+        }
+        val quoteTv = TextView(this).apply {
+            text = "“Apne maqsad ko yaad rakho. Yeh waqt dobara laut kar nahi aayega.”"
+            setTextColor(Color.parseColor("#94A3B8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.ITALIC)
+            gravity = Gravity.CENTER
+        }
+        blockedAppSubtitleTextView = quoteTv
+        quoteBox.addView(quoteTv)
+        cardContainer.addView(quoteBox, quoteBoxParams)
 
-        // 3. Live Unlock Countdown Box
+        // 5. Digital Vault Countdown Box
         val countdownBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(16).toFloat()
-                setColor(Color.parseColor("#0D1117"))
-                setStroke(dp(1), Color.parseColor("#FFBE0B"))
+                setColor(Color.parseColor("#0B0E14"))
+                setStroke(dp(1), Color.parseColor("#263042"))
             }
-            setPadding(dp(20), dp(18), dp(20), dp(18))
+            setPadding(dp(18), dp(16), dp(18), dp(16))
         }
         val countdownBoxParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -540,10 +597,11 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         val labelTv = TextView(this).apply {
-            text = "$appName unlock hone mein baqi waqt:"
-            setTextColor(Color.parseColor("#8B949E"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            text = "UNLOCK HONE MEIN BAQI WAQT"
+            setTextColor(Color.parseColor("#94A3B8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.12f
             gravity = Gravity.CENTER
         }
         countdownLabelTextView = labelTv
@@ -554,38 +612,39 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         val timerTv = TextView(this).apply {
             text = RealtimeQuotaManager.formatMillisToHhMmSs(initialRemainingMs)
-            setTextColor(Color.parseColor("#FFBE0B"))
+            setTextColor(Color.parseColor("#FF4D6D"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, dp(10))
+            setPadding(0, dp(8), 0, dp(8))
         }
         countdownTimerTextView = timerTv
         countdownBox.addView(timerTv)
 
         val footerNoteTv = TextView(this).apply {
             text = "Meharbani farma kar unlock time pura hone ka wait karein."
-            setTextColor(Color.parseColor("#C9D1D9"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(Color.parseColor("#64748B"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             gravity = Gravity.CENTER
         }
         countdownBox.addView(footerNoteTv)
 
         cardContainer.addView(countdownBox, countdownBoxParams)
 
-        // 4. Action Button: "Wapas Home Screen Par Jayein"
+        // 6. Premium Action Button: "WAPAS APNE KAAM PAR JAYEIN"
         val exitHomeButton = Button(this).apply {
-            text = "Wapas Home Screen Par Jayein"
+            text = "WAPAS APNE KAAM PAR JAYEIN"
             isAllCaps = false
-            setTextColor(Color.parseColor("#0D1117"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextColor(Color.parseColor("#090D16"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.05f
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(14).toFloat()
-                setColor(Color.parseColor("#00F5D4"))
+                setColor(Color.parseColor("#FFFFFF"))
             }
-            setPadding(dp(20), dp(14), dp(20), dp(14))
+            setPadding(dp(20), dp(16), dp(20), dp(16))
             setOnClickListener {
                 currentForegroundPackage = null
                 performGlobalAction(GLOBAL_ACTION_HOME)
