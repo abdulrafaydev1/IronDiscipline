@@ -7,9 +7,6 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -30,34 +27,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build Debug APK
-        run: |
-          set -o pipefail
-          mkdir -p build_logs
-          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee build_logs/gradle_build.log
-
-      - name: Dump Failure Log to Branch
-        if: failure()
-        run: |
-          echo "=== EXTRACTING GRADLE COMPILATION ERRORS ==="
-          python3 -c "
-          with open('build_logs/gradle_build.log', 'r', errors='ignore') as f:
-              for line in f:
-                  if any(k in line for k in ['e: ', 'FAILURE: ', 'Compilation error', 'Unresolved reference', 'Overload resolution', 'Cannot find']):
-                      print('COMPILER_ERROR:', line.strip())
-          " || true
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git checkout -B build-error-log
-          git add -f build_logs/gradle_build.log
-          git commit -m "chore: save build failure log" || true
-          git push -f origin build-error-log || true
-
-      - name: Upload Build Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: build_logs/
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload Build Reports on Failure
         if: failure()

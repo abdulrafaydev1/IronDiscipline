@@ -858,7 +858,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             }
             setPadding(dp(20), dp(16), dp(20), dp(16))
             setOnClickListener {
-                currentActivePackage = ""
+                currentTargetAppKey = null
+                lastDetectedPackage = ""
+                hideFloatingTimerPill()
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 hideNativeBlockOverlay()
             }
