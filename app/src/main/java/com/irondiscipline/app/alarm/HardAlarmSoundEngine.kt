@@ -3,11 +3,11 @@ package com.irondiscipline.app.alarm
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
@@ -19,13 +19,15 @@ import kotlin.math.sin
  * High-Decibel Programmatic PCM Sound Synthesizer.
  * Generates 12 distinct, high-intensity hard alarm patterns directly in memory
  * using AudioTrack on AudioAttributes.USAGE_ALARM (Zero external media files required).
+ * Audio writes run on a dedicated high-priority OS thread with THREAD_PRIORITY_URGENT_AUDIO
+ * so device Doze / sleep states never suspend sound playback.
  */
 class HardAlarmSoundEngine private constructor() {
 
     private val engineScope = CoroutineScope(Dispatchers.Default)
 
     private var activeAudioTrack: AudioTrack? = null
-    private var activePlaybackJob: Job? = null
+    private var playbackThread: Thread? = null
     private var previewTimerJob: Job? = null
 
     private val isPlaying = AtomicBoolean(false)
@@ -84,12 +86,24 @@ class HardAlarmSoundEngine private constructor() {
 
     /**
      * Loops the selected sound continuously until stopSound() is called (used by AlarmRingingService).
+     * Idempotent: If the same sound is already actively playing, reuses the active track.
      */
     @Synchronized
     fun startLoopingSound(soundIndex: Int) {
+        if (isPlaying.get() && currentlyPlayingSoundIndex == soundIndex && activeAudioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) {
+            Log.d("AlarmDiag", "[AUDIO_START] AudioTrack already playing soundIndex=$soundIndex, reusing active track")
+            return
+        }
         stopSound()
         currentlyPlayingSoundIndex = soundIndex
         startLoopingInternal(soundIndex)
+    }
+
+    /**
+     * Alias for startLoopingSound for explicit API compatibility.
+     */
+    fun playAlarmSound(soundIndex: Int) {
+        startLoopingSound(soundIndex)
     }
 
     private fun startLoopingInternal(soundIndex: Int) {
@@ -125,22 +139,35 @@ class HardAlarmSoundEngine private constructor() {
 
         try {
             track.play()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("AlarmDiag", "[AUDIO_START] Error starting AudioTrack: ${e.message}")
             return
         }
 
-        activePlaybackJob = engineScope.launch {
+        // Dedicated OS thread with THREAD_PRIORITY_URGENT_AUDIO prevents Doze throttling
+        playbackThread = Thread {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
             try {
-                while (isActive && isPlaying.get()) {
-                    track.write(soundBuffer, 0, soundBuffer.size, AudioTrack.WRITE_BLOCKING)
+                while (isPlaying.get() && !Thread.currentThread().isInterrupted) {
+                    val bytesWritten = track.write(soundBuffer, 0, soundBuffer.size, AudioTrack.WRITE_BLOCKING)
+                    if (bytesWritten < 0) {
+                        break
+                    }
                 }
-            } catch (_: Exception) {
+            } catch (_: InterruptedException) {
+                // Thread interrupted on stopSound()
+            } catch (e: Exception) {
+                Log.e("AlarmDiag", "[AUDIO_START] PCM playback loop exception: ${e.message}")
             } finally {
                 try {
                     track.stop()
                     track.release()
                 } catch (_: Exception) {}
             }
+        }.apply {
+            name = "IronDiscipline-UrgentAudioTrack"
+            isDaemon = true
+            start()
         }
     }
 
@@ -153,8 +180,11 @@ class HardAlarmSoundEngine private constructor() {
         currentlyPlayingSoundIndex = null
         previewTimerJob?.cancel()
         previewTimerJob = null
-        activePlaybackJob?.cancel()
-        activePlaybackJob = null
+
+        playbackThread?.let {
+            it.interrupt()
+            playbackThread = null
+        }
 
         try {
             activeAudioTrack?.stop()

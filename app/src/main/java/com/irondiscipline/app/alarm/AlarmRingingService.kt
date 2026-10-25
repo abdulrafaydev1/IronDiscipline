@@ -1,5 +1,6 @@
 package com.irondiscipline.app.alarm
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,18 +12,22 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.irondiscipline.app.R
+import com.irondiscipline.app.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +37,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Foreground Service that plays the synthesized PCM hard alarm sound and drives heavy vibration.
- * Maintains full-screen notification intent, holds WakeLocks, launches AlarmRingingActivity
- * directly over the lock screen, and guards maximum alarm volume.
+ * Promotes to systemExempted foreground service and STARTS AUDIO/VIBRATION IMMEDIATELY,
+ * fully decoupled from lock-screen Activity launch delays.
  */
 class AlarmRingingService : Service() {
 
@@ -98,7 +103,7 @@ class AlarmRingingService : Service() {
             try {
                 context.startActivity(intent)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("AlarmDiag", "[SERVICE_START] Exception launching AlarmRingingActivity: ${e.message}")
             }
         }
     }
@@ -121,7 +126,7 @@ class AlarmRingingService : Service() {
             ContextCompat.registerReceiver(this, unlockReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
             isUnlockReceiverRegistered = true
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("AlarmDiag", "[SERVICE_START] Error registering unlockReceiver: ${e.message}")
         }
 
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -143,12 +148,33 @@ class AlarmRingingService : Service() {
         val repository = AlarmRepository.getInstance(applicationContext)
         val alarm = if (alarmId != null) repository.getAlarmById(alarmId) else null
 
-        // Re-ensure WakeLocks are held
+        // Step A: Acquire WakeLocks immediately
         AlarmWakeLockManager.acquireWakeLocks(this)
 
-        // 1. Build and post high-priority lock-screen notification
+        // Step B: Promote to foreground (< 50ms)
         val notification = buildRingingNotification(alarmId, alarm)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+                )
+            } catch (e: Exception) {
+                Log.e("AlarmDiag", "[SERVICE_START] systemExempted startForeground failed: ${e.message}, falling back")
+                try {
+                    ServiceCompat.startForeground(
+                        this,
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    )
+                } catch (_: Exception) {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
@@ -164,19 +190,63 @@ class AlarmRingingService : Service() {
         currentRingingAlarmId = alarmId
         currentRingingAlarmLabel = alarm?.label ?: alarmLabel
 
-        // 2. Bring existing or new AlarmRingingActivity to front
-        bringAlarmScreenToFront(this)
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isKeyguardLocked = keyguardManager?.isKeyguardLocked ?: false
+        val isInteractive = powerManager?.isInteractive ?: false
+        val canFullScreen = PermissionHelper.canUseFullScreenIntent(this)
+        Log.d(
+            "AlarmDiag",
+            "[SERVICE_START] startForeground success, canUseFullScreenIntent=$canFullScreen, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
+        )
 
-        // 3. Prevent duplicate playback threads if already ringing for this alarm
+        // Prevent duplicate playback loops if already ringing for this exact alarm
         if (currentlyRingingAlarmId != null && currentlyRingingAlarmId == alarmId) {
+            bringAlarmScreenToFront(this)
             return START_STICKY
         }
         currentlyRingingAlarmId = alarmId
 
-        // 4. Max Volume Override & 1-Second Periodic Volume Guard
+        // Step C: START AUDIO & VIBRATION IMMEDIATELY (Decoupled from Activity lifecycle)
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+
+        // Request Audio Focus with USAGE_ALARM to pause all external media
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener { /* maintain alarm */ }
+                .build()
+            try {
+                am?.requestAudioFocus(focusRequest)
+            } catch (e: Exception) {
+                Log.w("AlarmDiag", "[AUDIO_START] Audio focus request error: ${e.message}")
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            try {
+                am?.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_ALARM,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                )
+            } catch (_: Exception) {}
+        }
+
+        // Max Volume Override & 1-Second Periodic Volume Guard
+        try {
+            am?.let {
+                val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+            }
+        } catch (_: Exception) {}
+
         volumeGuardJob?.cancel()
         volumeGuardJob = serviceScope.launch {
-            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             while (isActive) {
                 try {
                     am?.let {
@@ -190,12 +260,22 @@ class AlarmRingingService : Service() {
             }
         }
 
-        // 5. Play Selected High-Decibel Hard Sound
+        // Play Selected High-Decibel Hard Sound
         val soundIndex = alarm?.soundIndex ?: intent?.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0) ?: 0
         soundEngine.startLoopingSound(soundIndex)
 
-        // 6. Heavy Vibration Pulse
+        // Heavy Vibration Pulse
         startHeavyVibration()
+
+        val currentVol = am?.getStreamVolume(AudioManager.STREAM_ALARM) ?: -1
+        val maxVol = am?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: -1
+        Log.i(
+            "AlarmDiag",
+            "[AUDIO_START] AudioTrack playing soundIndex=$soundIndex, STREAM_ALARM volume=$currentVol/$maxVol, Vibrator active=true, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
+        )
+
+        // Step D: THEN bring AlarmRingingActivity to front
+        bringAlarmScreenToFront(this)
 
         return START_STICKY
     }
@@ -270,6 +350,8 @@ class AlarmRingingService : Service() {
     }
 
     override fun onDestroy() {
+        Log.d("AlarmDiag", "[DISMISS_CLEANUP] Stopping AlarmRingingService, audio stopped, vibrator cancelled, WakeLocks released")
+
         isCurrentlyRinging = false
         currentRingingAlarmId = null
         currentRingingAlarmLabel = null

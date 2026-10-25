@@ -111,6 +111,9 @@ fun AlarmScreen(
     var canUseFullScreenIntent by remember {
         mutableStateOf(PermissionHelper.canUseFullScreenIntent(context))
     }
+    var isBatteryOptimizationExempt by remember {
+        mutableStateOf(PermissionHelper.isIgnoringBatteryOptimizations(context))
+    }
 
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -131,6 +134,7 @@ fun AlarmScreen(
             hasNotificationPermission = PermissionHelper.hasNotificationPermission(context)
             canScheduleExactAlarms = PermissionHelper.canScheduleExactAlarms(context)
             canUseFullScreenIntent = PermissionHelper.canUseFullScreenIntent(context)
+            isBatteryOptimizationExempt = PermissionHelper.isIgnoringBatteryOptimizations(context)
             delay(2000L)
         }
     }
@@ -195,12 +199,13 @@ fun AlarmScreen(
             }
 
             // Permission Warning Banner if any critical screen-off alarm permission is missing
-            if (!hasNotificationPermission || !canScheduleExactAlarms || !canUseFullScreenIntent) {
+            if (!hasNotificationPermission || !canScheduleExactAlarms || !canUseFullScreenIntent || !isBatteryOptimizationExempt) {
                 item {
                     AlarmPermissionsBanner(
                         hasNotification = hasNotificationPermission,
                         canExactAlarm = canScheduleExactAlarms,
                         canFullScreen = canUseFullScreenIntent,
+                        isBatteryOptimized = !isBatteryOptimizationExempt,
                         onRequestNotification = {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -214,6 +219,11 @@ fun AlarmScreen(
                         onRequestFullScreen = {
                             try {
                                 context.startActivity(PermissionHelper.createManageFullScreenIntent(context))
+                            } catch (_: Exception) {}
+                        },
+                        onRequestBatteryExemption = {
+                            try {
+                                context.startActivity(PermissionHelper.createBatteryOptimizationExemptionIntent(context))
                             } catch (_: Exception) {}
                         }
                     )
@@ -320,9 +330,11 @@ fun AlarmPermissionsBanner(
     hasNotification: Boolean,
     canExactAlarm: Boolean,
     canFullScreen: Boolean,
+    isBatteryOptimized: Boolean,
     onRequestNotification: () -> Unit,
     onRequestExactAlarm: () -> Unit,
-    onRequestFullScreen: () -> Unit
+    onRequestFullScreen: () -> Unit,
+    onRequestBatteryExemption: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -451,6 +463,37 @@ fun AlarmPermissionsBanner(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text("Enable", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+
+            if (isBatteryOptimized) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "• Unrestricted Battery Usage",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Prevents system Doze from delaying locked alarms.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Button(
+                        onClick = onRequestBatteryExemption,
+                        modifier = Modifier.jellyElastic(baseCornerRadius = 8.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF2E54)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Exempt", fontSize = 11.sp, fontWeight = FontWeight.Black)
                     }
                 }
             }

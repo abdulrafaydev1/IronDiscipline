@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -112,10 +113,10 @@ class AlarmRingingActivity : ComponentActivity() {
                 AlarmRingingScreen(
                     alarm = alarm,
                     onDismissCompleted = {
-                        completeAlarmAndDismiss(activeAlarmId)
+                        completeAlarmAndDismiss(activeAlarmId, "MATH_SOLVED")
                     },
                     onDevTestDismiss = {
-                        completeAlarmAndDismiss(activeAlarmId)
+                        completeAlarmAndDismiss(activeAlarmId, "TEST_DISMISS")
                     }
                 )
             }
@@ -180,7 +181,8 @@ class AlarmRingingActivity : ComponentActivity() {
      * Terminate alarm ringing service, update repository, release wake locks,
      * and trigger official Android lock-screen unlock flow.
      */
-    private fun completeAlarmAndDismiss(alarmId: String?) {
+    private fun completeAlarmAndDismiss(alarmId: String?, reason: String = "MATH_SOLVED") {
+        Log.d("AlarmDiag", "[DISMISS_CLEANUP] Reason=$reason, alarmId=$alarmId, audio stopped, vibrator cancelled, WakeLocks released")
         isAlarmDismissed = true
         val repository = AlarmRepository.getInstance(applicationContext)
         if (alarmId != null) {

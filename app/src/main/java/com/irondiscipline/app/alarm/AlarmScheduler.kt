@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import com.irondiscipline.app.MainActivity
 import java.util.Calendar
 
@@ -17,7 +18,7 @@ class AlarmScheduler(private val context: Context) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
 
     companion object {
-        const val ACTION_TRIGGER_ALARM = "com.irondiscipline.app.alarm.TRIGGER_ALARM"
+        const val ACTION_TRIGGER_ALARM = "com.irondiscipline.app.ACTION_ALARM_TRIGGER"
         const val ACTION_SNOOZE_ALARM = "com.irondiscipline.app.alarm.SNOOZE_ALARM"
         const val ACTION_DISMISS_ALARM = "com.irondiscipline.app.alarm.DISMISS_ALARM"
 
@@ -54,6 +55,7 @@ class AlarmScheduler(private val context: Context) {
             putExtra(EXTRA_ALARM_LABEL, alarm.label)
             putExtra(EXTRA_SOUND_INDEX, alarm.soundIndex)
             putExtra(EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
 
         val pendingIntent = PendingIntent.getBroadcast(
@@ -71,6 +73,17 @@ class AlarmScheduler(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val canExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.canScheduleExactAlarms()
+        } else {
+            true
+        }
+        val deltaMs = nextTriggerMs - System.currentTimeMillis()
+        Log.d(
+            "AlarmDiag",
+            "[SCHEDULE] Alarm ID=${alarm.id}, target=${alarm.formattedTime}, triggerAtMillis=$nextTriggerMs, deltaMs=$deltaMs, canScheduleExactAlarms=$canExact"
+        )
+
         try {
             val clockInfo = AlarmManager.AlarmClockInfo(nextTriggerMs, showPendingIntent)
             am.setAlarmClock(clockInfo, pendingIntent)
@@ -82,7 +95,9 @@ class AlarmScheduler(private val context: Context) {
                 } else {
                     am.setExact(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e("AlarmDiag", "[SCHEDULE] Failed to schedule exact alarm fallback: ${e.message}")
+            }
         }
     }
 
@@ -117,6 +132,7 @@ class AlarmScheduler(private val context: Context) {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = ACTION_TRIGGER_ALARM
             putExtra(EXTRA_ALARM_ID, alarm.id)
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
 
         val pendingIntent = PendingIntent.getBroadcast(
