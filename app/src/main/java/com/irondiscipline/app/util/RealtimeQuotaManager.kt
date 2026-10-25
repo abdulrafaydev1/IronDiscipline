@@ -2,13 +2,11 @@ package com.irondiscipline.app.util
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.time.LocalDate
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 enum class CoreTargetApp(
     val appKey: String,
@@ -49,8 +47,9 @@ enum class CoreTargetApp(
             .toSet()
 
         fun fromPackageName(packageName: String): CoreTargetApp? {
+            val lower = packageName.lowercase().trim()
             return entries.firstOrNull { target ->
-                target.packageNames.any { it.equals(packageName, ignoreCase = true) }
+                target.packageNames.any { it.equals(lower, ignoreCase = true) }
             }
         }
 
@@ -111,16 +110,9 @@ data class RealtimeQuotaSnapshot(
 }
 
 /**
- * Synchronous SharedPreferences ("iron_discipline_prefs") + StateFlow state engine.
- * Stores strictly per appKey:
- * - used_seconds_<appKey>
- * - limit_seconds_<appKey>
- * - locked_until_epoch_ms_<appKey>
- * - remaining_lock_seconds_<appKey> (Strict 5-Hour Countdown: 18,000s)
- * - lock_started_elapsed_ms_<appKey> (Monotonic Clock-Tamper-Proof Base)
- * - is_one_minute_test_mode
- * - tracked_date_yyyy_mm_dd
- * Ensures independent timers and unbreakable 5-hour independent locks for YouTube, Facebook, Instagram, and TikTok.
+ * Clean, thread-safe Reader & Snapshot publisher for "iron_discipline_prefs".
+ * AppBlockerAccessibilityService is the ONLY writer of used_seconds_<appKey> during active usage,
+ * guaranteeing zero race conditions, zero fluctuations, and strictly monotonic countdowns.
  */
 class RealtimeQuotaManager private constructor(context: Context) {
 
@@ -129,146 +121,23 @@ class RealtimeQuotaManager private constructor(context: Context) {
         Context.MODE_PRIVATE
     )
 
-    private val usedSecondsCache = ConcurrentHashMap<String, Int>()
-    private val limitSecondsCache = ConcurrentHashMap<String, Int>()
-    private val lockedUntilCache = ConcurrentHashMap<String, Long>()
-    private val remainingLockSecondsCache = ConcurrentHashMap<String, Int>()
-    private val lockStartedElapsedCache = ConcurrentHashMap<String, Long>()
-    private val lastElapsedCheckCache = ConcurrentHashMap<String, Long>()
-
-    @Volatile
-    private var currentTrackedDate: String = LocalDate.now().toString()
-
-    @Volatile
-    private var isTestMode: Boolean = false
-
     private val _quotaSnapshotFlow = MutableStateFlow(RealtimeQuotaSnapshot())
     val quotaSnapshotFlow: StateFlow<RealtimeQuotaSnapshot> = _quotaSnapshotFlow.asStateFlow()
 
     init {
-        loadFromPrefsSynchronously()
-        checkExpiryAndMidnightRollover()
         publishSnapshot()
     }
 
-    @Synchronized
-    private fun loadFromPrefsSynchronously() {
-        val today = LocalDate.now().toString()
-        currentTrackedDate = prefs.getString(KEY_TRACKED_DATE, today) ?: today
-        isTestMode = prefs.getBoolean(KEY_IS_TEST_MODE, false)
-
-        usedSecondsCache.clear()
-        limitSecondsCache.clear()
-        lockedUntilCache.clear()
-        remainingLockSecondsCache.clear()
-        lockStartedElapsedCache.clear()
-        lastElapsedCheckCache.clear()
-
-        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
-        val nowElapsed = SystemClock.elapsedRealtime()
-
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            val used = prefs.getInt(PREFIX_USED_SEC + key, 0)
-            val lockedUntil = prefs.getLong(PREFIX_LOCKED_UNTIL + key, 0L)
-            val remainingLockSec = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
-
-            usedSecondsCache[key] = used
-            limitSecondsCache[key] = activeLimit
-            lockedUntilCache[key] = lockedUntil
-            remainingLockSecondsCache[key] = remainingLockSec
-            lockStartedElapsedCache[key] = nowElapsed
-            lastElapsedCheckCache[key] = nowElapsed
-        }
+    fun isTestModeActive(): Boolean {
+        return prefs.getBoolean(KEY_IS_TEST_MODE, false) || prefs.getBoolean("is_test_mode", false)
     }
 
-    /**
-     * Decrements the 5-hour countdown by genuine elapsed monotonic time.
-     * Defeats all attempts to bypass the lock by advancing the phone date/time.
-     */
-    @Synchronized
-    fun tickLockCountdowns(nowElapsedMs: Long = SystemClock.elapsedRealtime()): Boolean {
-        var changed = false
-        val editor = prefs.edit()
-
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            val remainingSec = remainingLockSecondsCache[key] ?: 0
-            if (remainingSec > 0) {
-                val lastCheck = lastElapsedCheckCache[key] ?: nowElapsedMs
-                val deltaMs = nowElapsedMs - lastCheck
-                if (deltaMs >= 950L) {
-                    val secondsToDeduct = (deltaMs / 1000L).toInt().coerceAtLeast(1)
-                    val newRemaining = (remainingSec - secondsToDeduct).coerceAtLeast(0)
-                    remainingLockSecondsCache[key] = newRemaining
-                    lastElapsedCheckCache[key] = nowElapsedMs
-                    changed = true
-
-                    if (newRemaining <= 0) {
-                        // 5 Full genuine hours have elapsed!
-                        remainingLockSecondsCache[key] = 0
-                        lockedUntilCache[key] = 0L
-                        usedSecondsCache[key] = 0 // Grant fresh quota
-                        editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
-                        editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
-                        editor.putInt(PREFIX_USED_SEC + key, 0)
-                    } else {
-                        editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, newRemaining)
-                    }
-                }
-            }
-        }
-
-        if (changed) {
-            editor.commit()
-            publishSnapshot()
-        }
-        return changed
+    fun getAppLimitSeconds(appKey: String): Int {
+        return if (isTestModeActive()) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
     }
 
-    /**
-     * Checks midnight rollover for UNLOCKED apps only.
-     * If an app has remaining_lock_seconds > 0, IT CANNOT BE UNLOCKED by date changes.
-     */
-    @Synchronized
-    fun checkExpiryAndMidnightRollover(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
-        var changed = false
-        val today = LocalDate.now().toString()
-        val isNewDay = today != currentTrackedDate
-
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            val remainingSec = remainingLockSecondsCache[key] ?: 0
-
-            // If still serving 5-hour penalty lock, DO NOT reset on midnight rollover or clock change!
-            if (remainingSec > 0) {
-                continue
-            }
-
-            // Midnight rollover for unlocked apps
-            if (isNewDay) {
-                usedSecondsCache[key] = 0
-                lockedUntilCache[key] = 0L
-                changed = true
-            }
-        }
-
-        if (isNewDay) {
-            currentTrackedDate = today
-            changed = true
-        }
-
-        if (changed) {
-            saveAllToPrefsSynchronously()
-            publishSnapshot(nowEpochMs)
-        }
-        return changed
-    }
-
-    fun isTestModeActive(): Boolean = isTestMode
-
-    fun checkMidnightResetIfNeeded(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
-        return checkExpiryAndMidnightRollover(nowEpochMs)
+    fun getUsedSeconds(appKey: String): Int {
+        return prefs.getInt(PREFIX_USED_SEC + appKey, 0).coerceAtLeast(0)
     }
 
     fun getUsedSecondsToday(appKeyOrPackage: String): Int {
@@ -276,245 +145,43 @@ class RealtimeQuotaManager private constructor(context: Context) {
         return getUsedSeconds(appKey)
     }
 
-    fun getAppLimitSeconds(appKey: String): Int {
-        return if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
-    }
-
-    fun getUsedSeconds(appKey: String): Int {
-        checkExpiryAndMidnightRollover()
-        return usedSecondsCache[appKey] ?: 0
-    }
-
     fun getLockedUntilEpochMs(appKey: String): Long {
-        return lockedUntilCache[appKey] ?: 0L
+        return prefs.getLong(PREFIX_LOCKED_UNTIL + appKey, 0L)
     }
 
     fun getRemainingLockSeconds(appKey: String): Int {
-        return (remainingLockSecondsCache[appKey] ?: 0).coerceAtLeast(0)
+        return prefs.getInt(PREFIX_REMAINING_LOCK_SEC + appKey, 0).coerceAtLeast(0)
     }
 
-    /**
-     * Returns true if ANY target app is locked for 5 hours or reached its limit.
-     */
+    fun isAppLocked(appKey: String): Boolean {
+        val remainingLockSec = getRemainingLockSeconds(appKey)
+        val used = getUsedSeconds(appKey)
+        val limit = getAppLimitSeconds(appKey)
+        return remainingLockSec > 0 || used >= limit
+    }
+
+    fun isAppLocked(appKey: String, nowEpochMs: Long): Boolean {
+        return isAppLocked(appKey)
+    }
+
     fun isAnyAppLocked(): Boolean {
-        return CoreTargetApp.entries.any { target ->
-            (remainingLockSecondsCache[target.appKey] ?: 0) > 0 ||
-                (usedSecondsCache[target.appKey] ?: 0) >= getAppLimitSeconds(target.appKey)
-        }
+        return CoreTargetApp.entries.any { isAppLocked(it.appKey) }
     }
 
     /**
-     * Returns true if the specific target app is currently locked.
-     * Controlled strictly by remaining_lock_seconds > 0.
+     * Publishes latest SharedPreferences state to the UI StateFlow.
+     * Guaranteed read-only; never mutates or fluctuates used_seconds.
      */
     @Synchronized
-    fun isAppLocked(appKey: String, nowEpochMs: Long = System.currentTimeMillis()): Boolean {
-        val remainingSec = remainingLockSecondsCache[appKey] ?: 0
-        if (remainingSec > 0) {
-            return true
-        }
+    fun publishSnapshot() {
+        val isTestMode = isTestModeActive()
+        val limit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
 
-        val used = usedSecondsCache[appKey] ?: 0
-        val limit = getAppLimitSeconds(appKey)
-        if (used >= limit) {
-            engageLockForAppInternal(appKey, nowEpochMs)
-            return true
-        }
-        return false
-    }
-
-    /**
-     * Increments used_seconds_<appKey> by 1 second for that specific app only.
-     * If limit is reached, locks ONLY this specific app for strictly 5 full hours.
-     */
-    @Synchronized
-    fun incrementUsedSecond(appKey: String, nowEpochMs: Long = System.currentTimeMillis()): Int {
-        val remainingSec = remainingLockSecondsCache[appKey] ?: 0
-        if (remainingSec > 0) {
-            publishSnapshot(nowEpochMs)
-            return usedSecondsCache[appKey] ?: 0
-        }
-
-        val currentUsed = usedSecondsCache[appKey] ?: 0
-        val nextUsed = currentUsed + 1
-        usedSecondsCache[appKey] = nextUsed
-
-        val limit = getAppLimitSeconds(appKey)
-        if (nextUsed >= limit) {
-            engageLockForAppInternal(appKey, nowEpochMs)
-        } else {
-            prefs.edit()
-                .putString(KEY_TRACKED_DATE, currentTrackedDate)
-                .putInt(PREFIX_USED_SEC + appKey, nextUsed)
-                .commit()
-        }
-
-        publishSnapshot(nowEpochMs)
-        return nextUsed
-    }
-
-    /**
-     * Locks ONLY the specified appKey for STRICTLY 5 HOURS (18,000 Seconds).
-     */
-    @Synchronized
-    fun engageLockForApp(appKey: String, nowEpochMs: Long = System.currentTimeMillis()) {
-        engageLockForAppInternal(appKey, nowEpochMs)
-        publishSnapshot(nowEpochMs)
-    }
-
-    private fun engageLockForAppInternal(appKey: String, nowEpochMs: Long) {
-        val currentRemainingSec = remainingLockSecondsCache[appKey] ?: 0
-        if (currentRemainingSec > 0) return
-
-        val lockEndMs = nowEpochMs + FIVE_HOURS_MS
-        val nowElapsed = SystemClock.elapsedRealtime()
-
-        remainingLockSecondsCache[appKey] = FIVE_HOURS_SECONDS
-        lockedUntilCache[appKey] = lockEndMs
-        lockStartedElapsedCache[appKey] = nowElapsed
-        lastElapsedCheckCache[appKey] = nowElapsed
-
-        prefs.edit()
-            .putInt(PREFIX_REMAINING_LOCK_SEC + appKey, FIVE_HOURS_SECONDS)
-            .putLong(PREFIX_LOCKED_UNTIL + appKey, lockEndMs)
-            .putLong(PREFIX_LOCK_STARTED_ELAPSED_MS + appKey, nowElapsed)
-            .putInt(PREFIX_USED_SEC + appKey, usedSecondsCache[appKey] ?: getAppLimitSeconds(appKey))
-            .commit()
-    }
-
-    /**
-     * Configures custom limit minutes for a specific target app.
-     */
-    @Synchronized
-    fun setAppLimitMinutes(appKey: String, limitMinutes: Int) {
-        // If app is currently locked for 5 hours, limit cannot be changed to unlock it
-        if ((remainingLockSecondsCache[appKey] ?: 0) > 0) return
-
-        val limitSec = (limitMinutes.coerceAtLeast(1)) * 60
-        limitSecondsCache[appKey] = limitSec
-        prefs.edit().putInt(PREFIX_LIMIT_SEC + appKey, limitSec).commit()
-
-        val nowMs = System.currentTimeMillis()
-        val used = usedSecondsCache[appKey] ?: 0
-        if (used >= limitSec) {
-            engageLockForAppInternal(appKey, nowMs)
-        }
-
-        publishSnapshot()
-    }
-
-    /**
-     * Resets used seconds and active lock for a SINGLE specific app (Only allowed when not in 5-hour lock).
-     */
-    @Synchronized
-    fun resetAppTimerAndLock(appKey: String) {
-        if ((remainingLockSecondsCache[appKey] ?: 0) > 0) return
-
-        usedSecondsCache[appKey] = 0
-        lockedUntilCache[appKey] = 0L
-        remainingLockSecondsCache[appKey] = 0
-        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
-        limitSecondsCache[appKey] = activeLimit
-        prefs.edit()
-            .putInt(PREFIX_USED_SEC + appKey, 0)
-            .putInt(PREFIX_LIMIT_SEC + appKey, activeLimit)
-            .putLong(PREFIX_LOCKED_UNTIL + appKey, 0L)
-            .putInt(PREFIX_REMAINING_LOCK_SEC + appKey, 0)
-            .commit()
-        publishSnapshot()
-    }
-
-    /**
-     * Global 1-Min Test Mode: switches limit for all 4 apps to 60s.
-     * BLOCKED if ANY app currently has an active 5-hour lock!
-     */
-    @Synchronized
-    fun activateGlobalOneMinuteTestMode() {
-        if (isAnyAppLocked()) return
-
-        currentTrackedDate = LocalDate.now().toString()
-        isTestMode = true
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            limitSecondsCache[key] = TEST_MODE_LIMIT_SECONDS
-            usedSecondsCache[key] = 0
-            lockedUntilCache[key] = 0L
-            remainingLockSecondsCache[key] = 0
-        }
-        saveAllToPrefsSynchronously()
-        publishSnapshot()
-    }
-
-    /**
-     * Global 30-Min Normal Mode: switches limit for all 4 apps to 1800s.
-     * BLOCKED if ANY app currently has an active 5-hour lock!
-     */
-    @Synchronized
-    fun switchBackToNormalThirtyMinModeAndReset() {
-        if (isAnyAppLocked()) return
-
-        currentTrackedDate = LocalDate.now().toString()
-        isTestMode = false
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            limitSecondsCache[key] = NORMAL_MODE_LIMIT_SECONDS
-            usedSecondsCache[key] = 0
-            lockedUntilCache[key] = 0L
-            remainingLockSecondsCache[key] = 0
-        }
-        saveAllToPrefsSynchronously()
-        publishSnapshot()
-    }
-
-    /**
-     * Reset All Timers & Locks.
-     * BLOCKED if ANY app currently has an active 5-hour lock!
-     */
-    @Synchronized
-    fun resetAllTimersAndLocks() {
-        if (isAnyAppLocked()) return
-
-        currentTrackedDate = LocalDate.now().toString()
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            usedSecondsCache[key] = 0
-            lockedUntilCache[key] = 0L
-            remainingLockSecondsCache[key] = 0
-        }
-        saveAllToPrefsSynchronously()
-        publishSnapshot()
-    }
-
-    private fun saveAllToPrefsSynchronously() {
-        val editor = prefs.edit()
-            .putString(KEY_TRACKED_DATE, currentTrackedDate)
-            .putBoolean(KEY_IS_TEST_MODE, isTestMode)
-
-        val activeLimit = if (isTestMode) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
-        for (target in CoreTargetApp.entries) {
-            val key = target.appKey
-            editor.putInt(PREFIX_USED_SEC + key, usedSecondsCache[key] ?: 0)
-            editor.putInt(PREFIX_LIMIT_SEC + key, activeLimit)
-            editor.putLong(PREFIX_LOCKED_UNTIL + key, lockedUntilCache[key] ?: 0L)
-            editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, remainingLockSecondsCache[key] ?: 0)
-            editor.putLong(PREFIX_LOCK_STARTED_ELAPSED_MS + key, lockStartedElapsedCache[key] ?: 0L)
-        }
-        editor.commit()
-    }
-
-    fun refreshSnapshotNow(nowEpochMs: Long = System.currentTimeMillis()) {
-        tickLockCountdowns()
-        checkExpiryAndMidnightRollover(nowEpochMs)
-        publishSnapshot(nowEpochMs)
-    }
-
-    private fun publishSnapshot(nowEpochMs: Long = System.currentTimeMillis()) {
         val statuses = CoreTargetApp.entries.map { target ->
             val key = target.appKey
-            val used = (usedSecondsCache[key] ?: 0).coerceAtLeast(0)
-            val limit = getAppLimitSeconds(key)
-            val lockedUntil = lockedUntilCache[key] ?: 0L
-            val remainingLockSec = (remainingLockSecondsCache[key] ?: 0).coerceAtLeast(0)
+            val used = prefs.getInt(PREFIX_USED_SEC + key, 0).coerceAtLeast(0)
+            val remainingLockSec = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + key, 0).coerceAtLeast(0)
+            val lockedUntil = prefs.getLong(PREFIX_LOCKED_UNTIL + key, 0L)
             val isLocked = remainingLockSec > 0 || used >= limit
             val remainingSec = if (isLocked) 0 else (limit - used).coerceAtLeast(0)
             val lockRemainingMs = remainingLockSec * 1000L
@@ -532,10 +199,106 @@ class RealtimeQuotaManager private constructor(context: Context) {
         }
 
         _quotaSnapshotFlow.value = RealtimeQuotaSnapshot(
-            dateString = currentTrackedDate,
+            dateString = LocalDate.now().toString(),
             isTestModeActive = isTestMode,
             coreStatuses = statuses
         )
+    }
+
+    fun refreshSnapshotNow(nowEpochMs: Long = System.currentTimeMillis()) {
+        publishSnapshot()
+    }
+
+    fun checkMidnightResetIfNeeded(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
+        publishSnapshot()
+        return false
+    }
+
+    /**
+     * Activated when the user toggles 1-Minute Test Mode on the Dashboard.
+     * Blocked if ANY app is locked for 5 hours.
+     */
+    @Synchronized
+    fun activateGlobalOneMinuteTestMode() {
+        if (isAnyAppLocked()) return
+
+        val editor = prefs.edit()
+            .putBoolean(KEY_IS_TEST_MODE, true)
+            .putBoolean("is_test_mode", true)
+
+        for (target in CoreTargetApp.entries) {
+            val key = target.appKey
+            editor.putInt(PREFIX_LIMIT_SEC + key, TEST_MODE_LIMIT_SECONDS)
+            editor.putInt(PREFIX_USED_SEC + key, 0)
+            editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
+            editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
+        }
+        editor.commit()
+        publishSnapshot()
+    }
+
+    /**
+     * Activated when the user switches to 30-Minute Normal Mode on the Dashboard.
+     * Blocked if ANY app is locked for 5 hours.
+     */
+    @Synchronized
+    fun switchBackToNormalThirtyMinModeAndReset() {
+        if (isAnyAppLocked()) return
+
+        val editor = prefs.edit()
+            .putBoolean(KEY_IS_TEST_MODE, false)
+            .putBoolean("is_test_mode", false)
+
+        for (target in CoreTargetApp.entries) {
+            val key = target.appKey
+            editor.putInt(PREFIX_LIMIT_SEC + key, NORMAL_MODE_LIMIT_SECONDS)
+            editor.putInt(PREFIX_USED_SEC + key, 0)
+            editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
+            editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
+        }
+        editor.commit()
+        publishSnapshot()
+    }
+
+    /**
+     * Reset All Timers & Locks (Blocked while any 5-hour lock is active).
+     */
+    @Synchronized
+    fun resetAllTimersAndLocks() {
+        if (isAnyAppLocked()) return
+
+        val editor = prefs.edit()
+        for (target in CoreTargetApp.entries) {
+            val key = target.appKey
+            editor.putInt(PREFIX_USED_SEC + key, 0)
+            editor.putLong(PREFIX_LOCKED_UNTIL + key, 0L)
+            editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
+        }
+        editor.commit()
+        publishSnapshot()
+    }
+
+    @Synchronized
+    fun resetAppTimerAndLock(appKey: String) {
+        if (getRemainingLockSeconds(appKey) > 0) return
+
+        val isTest = isTestModeActive()
+        val limit = if (isTest) TEST_MODE_LIMIT_SECONDS else NORMAL_MODE_LIMIT_SECONDS
+        prefs.edit()
+            .putInt(PREFIX_USED_SEC + appKey, 0)
+            .putInt(PREFIX_LIMIT_SEC + appKey, limit)
+            .putLong(PREFIX_LOCKED_UNTIL + appKey, 0L)
+            .putInt(PREFIX_REMAINING_LOCK_SEC + appKey, 0)
+            .commit()
+        publishSnapshot()
+    }
+
+    @Synchronized
+    fun setAppLimitMinutes(appKey: String, limitMinutes: Int) {
+        if (getRemainingLockSeconds(appKey) > 0) return
+        val limitSec = (limitMinutes.coerceAtLeast(1)) * 60
+        prefs.edit().putInt(PREFIX_LIMIT_SEC + appKey, limitSec).commit()
+        publishSnapshot()
     }
 
     companion object {
@@ -554,7 +317,7 @@ class RealtimeQuotaManager private constructor(context: Context) {
 
         const val NORMAL_MODE_LIMIT_SECONDS = 1800 // 30 minutes
         const val TEST_MODE_LIMIT_SECONDS = 60     // 1 minute
-        const val TEST_MODE_LOCK_DURATION_MS = FIVE_HOURS_MS // strictly 5 hours in test mode too
+        const val TEST_MODE_LOCK_DURATION_MS = FIVE_HOURS_MS
 
         @Volatile
         private var INSTANCE: RealtimeQuotaManager? = null

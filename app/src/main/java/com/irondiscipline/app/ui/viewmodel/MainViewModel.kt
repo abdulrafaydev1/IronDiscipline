@@ -157,29 +157,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshPermissionsAndApps() {
         _permissionState.value = PermissionHelper.checkAllPermissions(context, usageTrackerHelper)
         DisciplineMonitorService.startServiceIfNeeded(context)
-        realtimeQuotaManager.checkMidnightResetIfNeeded()
+        realtimeQuotaManager.publishSnapshot()
         viewModelScope.launch(Dispatchers.IO) {
             repository.getOrCreateDisciplineState()
             val discovered = usageTrackerHelper.getInstalledAndTargetApps()
             _installedApps.value = discovered
-            repository.syncTodayUsageLogs()
         }
     }
 
     private fun startClockAndUsageSyncLoop() {
         viewModelScope.launch(Dispatchers.Default) {
-            var tickCounter = 0
             while (isActive) {
-                delay(1000L)
+                delay(500L)
                 val nowMs = System.currentTimeMillis()
                 _clockTickMs.value = nowMs
-                realtimeQuotaManager.refreshSnapshotNow(nowMs)
-                tickCounter++
-                if (tickCounter % 5 == 0) {
-                    repository.syncTodayUsageLogs()
-                    _permissionState.value =
-                        PermissionHelper.checkAllPermissions(context, usageTrackerHelper)
-                }
+                realtimeQuotaManager.publishSnapshot()
             }
         }
     }
