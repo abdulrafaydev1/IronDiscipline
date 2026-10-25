@@ -295,7 +295,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
      * Non-intrusive floating indicator in top-right corner.
      * Shows visual proof of live countdown inside target apps.
      */
-    private fun showOrUpdateFloatingTimerPill(appKey: String, remainingSec: Int) {
+    fun showOrUpdateFloatingTimerPill(appKey: String, remainingSec: Int) {
         val wm = windowManager ?: return
 
         val appTag = when (appKey) {
@@ -357,7 +357,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun hideFloatingTimerPill() {
+    fun hideFloatingTimerPill() {
         val pill = floatingPillView ?: return
         floatingPillView = null
         try {

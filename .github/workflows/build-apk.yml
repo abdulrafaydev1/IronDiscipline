@@ -28,8 +28,19 @@ jobs:
 
       - name: Build Debug APK
         run: |
+          set -o pipefail
           mkdir -p build_logs
-          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee build_logs/gradle_build.log || (echo "=== GRADLE FAILURE LOG ===" && tail -n 150 build_logs/gradle_build.log && exit 1)
+          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee build_logs/gradle_build.log
+
+      - name: Dump Failure Log to Console and Summary
+        if: failure()
+        run: |
+          echo "=== GRADLE FAILURE DETECTED ==="
+          tail -n 80 build_logs/gradle_build.log
+          echo "### Gradle Build Failure" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "e: |FAILURE:|Caused by:|ERROR:" -C 4 build_logs/gradle_build.log | tail -n 80 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Build Logs
         if: always()
