@@ -412,7 +412,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             val alarms = AlarmRepository.getInstance(applicationContext).alarmsFlow.value
             val hasEnabledAlarms = alarms.any { it.isEnabled }
 
-            // Hold CPU PARTIAL_WAKE_LOCK so the 1-second loop NEVER freezes during screen-off sleep!
+            // Allow natural sleep when idle to comply with Android power management
             AlarmWakeLockManager.maintainPendingAlarmCpuLock(this, hasEnabledAlarms)
 
             val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

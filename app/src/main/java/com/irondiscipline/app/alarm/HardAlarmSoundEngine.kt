@@ -77,6 +77,7 @@ class HardAlarmSoundEngine private constructor() {
 
     /**
      * Halts all active audio playback immediately with full resource cleanup.
+     * Synchronized to prevent thread race conditions with AudioTrack.write() and AudioTrack.release().
      */
     fun stopSound() {
         synchronized(lock) {
@@ -86,9 +87,13 @@ class HardAlarmSoundEngine private constructor() {
             previewTimerJob?.cancel()
             previewTimerJob = null
 
-            playbackThread?.let {
+            val thread = playbackThread
+            playbackThread = null
+            thread?.let {
                 it.interrupt()
-                playbackThread = null
+                try {
+                    it.join(250L)
+                } catch (_: Exception) {}
             }
 
             try {

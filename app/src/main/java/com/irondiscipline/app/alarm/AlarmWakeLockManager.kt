@@ -24,36 +24,20 @@ object AlarmWakeLockManager {
     private var ringingScreenWakeLock: PowerManager.WakeLock? = null
 
     /**
-     * Call this whenever there is at least 1 enabled alarm.
-     * Keeps the CPU ticking 100% reliably while the screen is completely OFF.
+     * Cleanly manages idle state.
+     * Note: AlarmManager.setAlarmClock() natively programs hardware RTC wake-ups.
+     * Indefinite partial wake locks prior to trigger are deliberately avoided to comply
+     * with Android Power Management guidelines and prevent the OS / OEM power managers
+     * from forcing the app into RESTRICTED Standby Bucket.
      */
-    @SuppressLint("WakelockTimeout")
     @Synchronized
     fun maintainPendingAlarmCpuLock(context: Context, hasEnabledAlarms: Boolean) {
-        val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-        if (hasEnabledAlarms) {
-            if (pendingCpuWakeLock == null) {
-                pendingCpuWakeLock = pm.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "IronDiscipline:PendingAlarmCpuLock"
-                ).apply { setReferenceCounted(false) }
+        try {
+            if (pendingCpuWakeLock?.isHeld == true) {
+                pendingCpuWakeLock?.release()
+                Log.d(TAG, "Pending Alarm CPU WakeLock released (allowing natural low-power sleep)")
             }
-            if (pendingCpuWakeLock?.isHeld == false) {
-                try {
-                    pendingCpuWakeLock?.acquire()
-                    Log.d(TAG, "Pending Alarm CPU WakeLock acquired (CPU remains ticking during screen-off)")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error acquiring pending CPU WakeLock", e)
-                }
-            }
-        } else {
-            try {
-                if (pendingCpuWakeLock?.isHeld == true) {
-                    pendingCpuWakeLock?.release()
-                    Log.d(TAG, "Pending Alarm CPU WakeLock released (no enabled alarms)")
-                }
-            } catch (_: Exception) {}
-        }
+        } catch (_: Exception) {}
     }
 
     /**

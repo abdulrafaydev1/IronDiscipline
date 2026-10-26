@@ -14,6 +14,7 @@ import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -344,6 +345,7 @@ class AlarmRingingService : Service() {
         val label = alarm?.label ?: "Wake up and conquer the day."
 
         val fullScreenIntent = Intent(this, AlarmRingingActivity::class.java).apply {
+            data = Uri.parse("irondiscipline://alarm_ring/${alarmId ?: "active"}")
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -352,9 +354,10 @@ class AlarmRingingService : Service() {
                     Intent.FLAG_ACTIVITY_NO_USER_ACTION
             )
         }
+        val requestCode = if (alarmId != null) AlarmScheduler.getRequestCode(alarmId) else 101
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this,
-            alarmId?.hashCode() ?: 101,
+            requestCode,
             fullScreenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
