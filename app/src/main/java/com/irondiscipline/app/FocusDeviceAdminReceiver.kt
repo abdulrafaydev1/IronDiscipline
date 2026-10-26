@@ -14,10 +14,11 @@ class FocusDeviceAdminReceiver : DeviceAdminReceiver() {
         super.onEnabled(context, intent)
         Log.i(TAG, "IronDiscipline Device Admin Protection Enabled successfully")
 
-        // If app has Device Owner privileges, actively enforce OS-level uninstall lock
+        // If app has Device Owner privileges, actively enforce OS-level uninstall lock and whitelist Lock Task mode
         if (PermissionHelper.isDeviceOwner(context)) {
             val success = PermissionHelper.setUninstallBlocked(context, true)
             Log.i(TAG, "Enforced Device Owner setUninstallBlocked(true): $success")
+            PermissionHelper.whitelistLockTaskPackage(context)
         }
     }
 

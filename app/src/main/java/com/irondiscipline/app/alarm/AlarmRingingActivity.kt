@@ -149,6 +149,15 @@ class AlarmRingingActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Crucial: Android LockTaskController requires the Activity to be in the RESUMED state.
+        // Silently activates Lock Task Mode when Device Owner is provisioned.
+        if (!isAlarmDismissed && AlarmRingingService.isCurrentlyRinging) {
+            PermissionHelper.enableLockTaskForAlarm(this)
+        }
+    }
+
     override fun onStop() {
         super.onStop()
         // If the alarm is still actively ringing and was pushed to background by phone unlock / home transition:

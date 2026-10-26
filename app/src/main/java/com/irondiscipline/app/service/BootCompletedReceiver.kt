@@ -17,9 +17,10 @@ class BootCompletedReceiver : BroadcastReceiver() {
             SecurityPinManager.resetAuthorizationSession(context)
             SecurityPinManager.ensureInitialized(context)
 
-            // 2. Re-assert Device Owner uninstall block at the system level if provisioned
+            // 2. Re-assert Device Owner uninstall block and Lock Task whitelist if provisioned
             if (PermissionHelper.isDeviceOwner(context)) {
                 PermissionHelper.setUninstallBlocked(context, true)
+                PermissionHelper.whitelistLockTaskPackage(context)
             }
 
             DisciplineMonitorService.startServiceIfNeeded(context)

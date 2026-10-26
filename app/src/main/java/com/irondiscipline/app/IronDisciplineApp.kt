@@ -19,9 +19,10 @@ class IronDisciplineApp : Application() {
         RealtimeQuotaManager.getInstance(this)
         DisciplineMonitorService.startServiceIfNeeded(this)
 
-        // 2. If Device Owner privileges exist, ensure OS-level uninstall restriction is active
+        // 2. If Device Owner privileges exist, ensure OS-level uninstall restriction & Lock Task whitelist are active
         if (PermissionHelper.isDeviceOwner(this)) {
             PermissionHelper.setUninstallBlocked(this, true)
+            PermissionHelper.whitelistLockTaskPackage(this)
         }
     }
 

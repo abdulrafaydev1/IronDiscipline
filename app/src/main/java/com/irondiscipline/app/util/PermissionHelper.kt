@@ -294,6 +294,39 @@ object PermissionHelper {
     }
 
     /**
+     * Pre-whitelists our package for Lock Task mode and configures feature flags.
+     * Must be called by Device Owner on startup or when Device Admin is enabled.
+     */
+    fun whitelistLockTaskPackage(context: Context): Boolean {
+        if (!isDeviceOwner(context)) return false
+        val dpm = getDevicePolicyManager(context) ?: return false
+        val admin = getDeviceAdminComponent(context)
+        val pkg = context.packageName
+
+        return try {
+            val currentPackages: Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                dpm.getLockTaskPackages(admin) ?: emptyArray<String>()
+            } else {
+                emptyArray<String>()
+            }
+
+            if (!currentPackages.contains(pkg)) {
+                val updatedPackages: Array<String> = (currentPackages.toSet() + pkg).toTypedArray()
+                dpm.setLockTaskPackages(admin, updatedPackages)
+                Log.i("PermissionHelper", "Pre-whitelisted $pkg for LockTaskMode")
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO)
+            }
+            true
+        } catch (e: Exception) {
+            Log.w("PermissionHelper", "Failed to pre-whitelist LockTask: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * Activates official Android Lock Task Mode to restrict the Power-Off menu while the alarm is ringing.
      *
      * In accordance with official Android SDK device management:
