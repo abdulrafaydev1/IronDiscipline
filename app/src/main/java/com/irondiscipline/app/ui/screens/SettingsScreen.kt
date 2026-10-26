@@ -258,6 +258,20 @@ fun SettingsScreen(
             )
         }
 
+        // Permission Card 7: Device Admin Protection
+        PermissionItemCard(
+            title = "Device Admin Protection",
+            description = "Prevents accidental uninstallation from home screen without entering your 4-digit PIN in-app.",
+            icon = Icons.Default.Security,
+            isGranted = permissionState.isDeviceAdminActive,
+            actionLabel = "Activate Device Admin",
+            onActionClick = {
+                try {
+                    context.startActivity(PermissionHelper.createEnableDeviceAdminIntent(context))
+                } catch (_: Exception) {}
+            }
+        )
+
         // Refresh Permissions Button
         OutlinedButton(
             onClick = onRefreshPermissions,

@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -157,8 +158,8 @@ fun DashboardScreen(
             isTestMode = isTestMode
         )
 
-        // 3. Sleek Permission Alert Card (Conditional: shown only if critical permissions missing)
-        if (!permissionState.allCriticalGranted) {
+        // 3. Sleek Permission Alert Card (Conditional: shown if critical permissions or Device Admin missing)
+        if (!permissionState.allCriticalGranted || !permissionState.isDeviceAdminActive) {
             SleekPermissionAlertCard(
                 context = context,
                 permissionState = permissionState,
@@ -555,6 +556,35 @@ private fun SleekPermissionAlertCard(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Enable Overlay Permission",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                if (!permissionState.isDeviceAdminActive) {
+                    Button(
+                        onClick = {
+                            context.startActivity(PermissionHelper.createEnableDeviceAdminIntent(context))
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .jellyElastic(baseCornerRadius = 12.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF38BDF8),
+                            contentColor = ColorObsidianDeep
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "🛡️ Enable Device Admin (Uninstall Protection)",
                             fontWeight = FontWeight.Black,
                             fontSize = 12.sp
                         )

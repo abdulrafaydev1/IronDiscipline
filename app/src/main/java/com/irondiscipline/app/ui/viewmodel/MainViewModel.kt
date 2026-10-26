@@ -480,14 +480,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AppBlockerAccessibilityService.disarmAndDisableServiceForUninstall(context)
         realtimeQuotaManager.publishSnapshot()
 
+        // 1. Deactivate active Device Admin so OS natively permits uninstallation
         try {
-            val packageUri = android.net.Uri.parse("package:${context.packageName}")
-            val uninstallIntent = android.content.Intent(android.content.Intent.ACTION_DELETE, packageUri).apply {
-                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+            val dpm = context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+            val adminComponent = android.content.ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
+            if (dpm?.isAdminActive(adminComponent) == true) {
+                dpm.removeActiveAdmin(adminComponent)
             }
-            context.startActivity(uninstallIntent)
         } catch (e: Exception) {
-            postBannerMessage("Failed to launch uninstaller: ${e.message}")
+            android.util.Log.e("FocusAdmin", "Error removing active admin: ${e.message}")
         }
+
+        // 2. After a short 250ms handler delay, launch standard Android uninstall intent
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                val packageUri = android.net.Uri.parse("package:${context.packageName}")
+                val uninstallIntent = android.content.Intent(android.content.Intent.ACTION_DELETE, packageUri).apply {
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(uninstallIntent)
+            } catch (e: Exception) {
+                postBannerMessage("Failed to launch uninstaller: ${e.message}")
+            }
+        }, 250L)
     }
 }

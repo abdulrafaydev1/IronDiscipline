@@ -27,7 +27,8 @@ object PermissionHelper {
             hasOverlayPermission = Settings.canDrawOverlays(context),
             isAccessibilityServiceEnabled = isAccessibilityServiceEnabled(context),
             isBatteryOptimizationExempt = isIgnoringBatteryOptimizations(context),
-            hasNotificationPermission = hasNotificationPermission(context)
+            hasNotificationPermission = hasNotificationPermission(context),
+            isDeviceAdminActive = isDeviceAdminActive(context)
         )
     }
 
@@ -152,6 +153,24 @@ object PermissionHelper {
                 data = Uri.parse("package:${context.packageName}")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+        }
+    }
+
+    fun isDeviceAdminActive(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+        val adminComponent = ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
+        return dpm?.isAdminActive(adminComponent) == true
+    }
+
+    fun createEnableDeviceAdminIntent(context: Context): Intent {
+        val adminComponent = ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
+        return Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+            putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+            putExtra(
+                android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "Enable Device Admin to prevent accidental home-launcher uninstallation of IronDiscipline without entering your 4-digit PIN."
+            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
 }

@@ -207,20 +207,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // Anti-Tamper: Block Settings if ANY target app has an active 5-hour lock
-            if (isAnyCoreAppLocked(prefs)) {
-                if (SETTINGS_AND_INSTALLER_PACKAGES.contains(validPkg) || validPkg == "com.android.settings") {
-                    if (inspectSettingsForFiveHourTamper(safeEvent)) {
-                        performGlobalAction(GLOBAL_ACTION_HOME)
-                        showOrUpdateNonCoreBlockOverlay(
-                            "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked."
-                        )
-                        stopVideoAndSilenceAudio()
-                        return
-                    }
-                }
-            }
-
             // If user opened IronDiscipline MainActivity or Home Launcher, clear current target
             if ((validPkg == packageName && IronDisciplineApp.isMainActivityVisible) || isHomeLauncherPackage(validPkg)) {
                 currentTargetAppKey = null
@@ -536,20 +522,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         // Grace period check: Wait for Home Launcher transition
         if (System.currentTimeMillis() < exitToHomeGraceUntilMs) {
             return
-        }
-
-        // Anti-Tamper check if Settings is open while ANY app is locked
-        if (isAnyCoreAppLocked(prefs) && lastDetectedPackage.isNotBlank()) {
-            if (SETTINGS_AND_INSTALLER_PACKAGES.contains(lastDetectedPackage) || lastDetectedPackage == "com.android.settings") {
-                if (inspectSettingsForFiveHourTamper(null)) {
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                    showOrUpdateNonCoreBlockOverlay(
-                        "🛡️ STRICT 5-HOUR PROTECTION ACTIVE: Settings cannot be modified while an app is locked."
-                    )
-                    stopVideoAndSilenceAudio()
-                    return
-                }
-            }
         }
 
         // Calculator Anti-Cheat check while alarm is ringing
@@ -1142,55 +1114,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         ).toInt()
     }
 
-    private fun inspectSettingsForFiveHourTamper(safeEvent: AccessibilityEvent?): Boolean {
-        val eventTexts = safeEvent?.text?.joinToString(" ") { it.toString() }?.lowercase().orEmpty()
-        val eventDesc = safeEvent?.contentDescription?.toString()?.lowercase().orEmpty()
-        val className = safeEvent?.className?.toString()?.lowercase().orEmpty()
-        val combinedEvent = "$eventTexts $eventDesc $className"
-
-        val tamperKeywords = listOf(
-            "irondiscipline",
-            "iron discipline",
-            "accessibility",
-            "app info",
-            "force stop",
-            "clear data",
-            "clear storage",
-            "date & time",
-            "date and time",
-            "time zone",
-            "automatic date",
-            "set time",
-            "set date"
-        )
-
-        if (tamperKeywords.any { combinedEvent.contains(it) }) {
-            return true
-        }
-
-        val rootNode = try { rootInActiveWindow } catch (_: Exception) { null } ?: return false
-        val scrapedTexts = mutableListOf<String>()
-        collectVisibleTexts(rootNode, scrapedTexts, maxNodes = 100)
-        val fullWindowContent = scrapedTexts.joinToString(" | ").lowercase()
-
-        return tamperKeywords.any { fullWindowContent.contains(it) }
-    }
-
-    private fun collectVisibleTexts(node: AccessibilityNodeInfo?, outList: MutableList<String>, maxNodes: Int) {
-        if (node == null || outList.size >= maxNodes) return
-        node.text?.toString()?.takeIf { it.isNotBlank() }?.let { outList.add(it) }
-        node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let { outList.add(it) }
-
-        val childCount = node.childCount
-        for (i in 0 until childCount) {
-            if (outList.size >= maxNodes) break
-            val child = try { node.getChild(i) } catch (_: Exception) { null }
-            if (child != null) {
-                collectVisibleTexts(child, outList, maxNodes)
-            }
-        }
-    }
-
     private fun vibrateWarningPulse() {
         try {
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1276,15 +1199,6 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             "com.android.calculator2",
             "com.transsion.calculator",
             "com.vivo.calculator"
-        )
-
-        val SETTINGS_AND_INSTALLER_PACKAGES = setOf(
-            "com.android.settings",
-            "com.google.android.packageinstaller",
-            "com.android.packageinstaller",
-            "com.google.android.permissioncontroller",
-            "com.miui.securitycenter",
-            "com.samsung.accessibility"
         )
     }
 }
