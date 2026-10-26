@@ -53,6 +53,7 @@ class AlarmRingingService : Service() {
     private var currentlyRingingAlarmId: String? = null
 
     private var isUnlockReceiverRegistered = false
+    private var isScreenStateReceiverRegistered = false
 
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent?) {
@@ -68,10 +69,49 @@ class AlarmRingingService : Service() {
         }
     }
 
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent?) {
+            val action = intent?.action ?: return
+            if (isCurrentlyRinging) {
+                if (action == Intent.ACTION_SCREEN_OFF) {
+                    Log.i(TAG, "[IronAlarmTrace:SCREEN_OFF_INTERCEPT] User pressed Power button during alarm. Re-waking screen immediately!")
+                    AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
+                    bringAlarmScreenToFront(applicationContext)
+                    mainHandler.postDelayed({
+                        if (isCurrentlyRinging) {
+                            bringAlarmScreenToFront(applicationContext)
+                        }
+                    }, 80L)
+                } else if (action == Intent.ACTION_CLOSE_SYSTEM_DIALOGS) {
+                    Log.d(TAG, "[IronAlarmTrace:CLOSE_DIALOGS_INTERCEPT] Close system dialogs event detected while alarm is ringing")
+                    bringAlarmScreenToFront(applicationContext)
+                }
+            }
+        }
+    }
+
+    fun unregisterReceiversCleanly() {
+        if (isUnlockReceiverRegistered) {
+            try {
+                unregisterReceiver(unlockReceiver)
+            } catch (_: Exception) {}
+            isUnlockReceiverRegistered = false
+        }
+        if (isScreenStateReceiverRegistered) {
+            try {
+                unregisterReceiver(screenStateReceiver)
+            } catch (_: Exception) {}
+            isScreenStateReceiverRegistered = false
+        }
+    }
+
     companion object {
         const val TAG = "IronAlarmTrace"
         const val CHANNEL_ID = "iron_alarm_lockscreen_channel_v2"
         const val NOTIFICATION_ID = 2026
+
+        @Volatile
+        var serviceInstance: AlarmRingingService? = null
 
         @Volatile
         var isCurrentlyRinging: Boolean = false
@@ -89,6 +129,8 @@ class AlarmRingingService : Service() {
             isCurrentlyRinging = false
             currentRingingAlarmId = null
             currentRingingAlarmLabel = null
+
+            serviceInstance?.unregisterReceiversCleanly()
 
             ActiveAlarmSessionState.clearSession()
             HardAlarmSoundEngine.getInstance().stopSound()
@@ -141,6 +183,7 @@ class AlarmRingingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceInstance = this
         createNotificationChannel()
 
         // Acquire CPU and Screen WakeLocks immediately
@@ -156,6 +199,18 @@ class AlarmRingingService : Service() {
             isUnlockReceiverRegistered = true
         } catch (e: Exception) {
             Log.e("AlarmDiag", "[SERVICE_START] Error registering unlockReceiver: ${e.message}")
+        }
+
+        // Register dynamic receiver for SCREEN_OFF and CLOSE_SYSTEM_DIALOGS to immediately re-wake screen if user presses power button
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+        }
+        try {
+            ContextCompat.registerReceiver(this, screenStateReceiver, screenFilter, ContextCompat.RECEIVER_EXPORTED)
+            isScreenStateReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e("AlarmDiag", "[SERVICE_START] Error registering screenStateReceiver: ${e.message}")
         }
 
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -213,6 +268,10 @@ class AlarmRingingService : Service() {
         currentRingingAlarmId = alarmId
         currentRingingAlarmLabel = alarm?.label ?: alarmLabel
         currentlyRingingAlarmId = alarmId
+
+        // Synchronously record ringing state to persistent preferences
+        val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("is_alarm_currently_ringing", true).commit()
 
         if (alarmId != null) {
             ActiveAlarmSessionState.initSession(alarmId)
@@ -385,11 +444,9 @@ class AlarmRingingService : Service() {
         currentRingingAlarmLabel = null
         currentlyRingingAlarmId = null
 
-        if (isUnlockReceiverRegistered) {
-            try {
-                unregisterReceiver(unlockReceiver)
-            } catch (_: Exception) {}
-            isUnlockReceiverRegistered = false
+        unregisterReceiversCleanly()
+        if (serviceInstance === this) {
+            serviceInstance = null
         }
         mainHandler.removeCallbacksAndMessages(null)
 

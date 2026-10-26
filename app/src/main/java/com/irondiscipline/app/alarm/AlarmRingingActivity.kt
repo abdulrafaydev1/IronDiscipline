@@ -151,8 +151,6 @@ class AlarmRingingActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Crucial: Android LockTaskController requires the Activity to be in the RESUMED state.
-        // Silently activates Lock Task Mode when Device Owner is provisioned.
         if (!isAlarmDismissed && AlarmRingingService.isCurrentlyRinging) {
             PermissionHelper.enableLockTaskForAlarm(this)
         }
@@ -179,24 +177,77 @@ class AlarmRingingActivity : ComponentActivity() {
         )
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus && !isAlarmDismissed && AlarmRingingService.isCurrentlyRinging) {
+            // 1. Request closing any transient system dialog overlays
+            try {
+                @Suppress("DEPRECATION")
+                sendBroadcast(Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS))
+            } catch (_: Exception) {}
+
+            // 2. Re-assert alarm window focus and keep screen awake
+            AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
+            window.decorView.postDelayed({
+                if (!isAlarmDismissed && AlarmRingingService.isCurrentlyRinging) {
+                    AlarmRingingService.bringAlarmScreenToFront(applicationContext)
+                }
+            }, 80L)
+        }
+    }
+
+    /**
+     * Intercept physical key presses in dispatchKeyEvent to prevent volume muting,
+     * back navigation, or power button bypass while alarm is ringing.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        val keyCode = event?.keyCode
+        if (AlarmRingingService.isCurrentlyRinging && !isAlarmDismissed) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN,
+                KeyEvent.KEYCODE_VOLUME_UP,
+                KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    restoreMaxAlarmVolume()
+                    return true
+                }
+                KeyEvent.KEYCODE_POWER,
+                KeyEvent.KEYCODE_BACK -> {
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     /**
      * Intercept hardware volume down and mute keys to maintain 100% alarm volume.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
-            keyCode == KeyEvent.KEYCODE_VOLUME_MUTE ||
-            keyCode == KeyEvent.KEYCODE_VOLUME_UP
-        ) {
-            try {
-                val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                am?.let {
-                    val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                    it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+        if (AlarmRingingService.isCurrentlyRinging && !isAlarmDismissed) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN,
+                KeyEvent.KEYCODE_VOLUME_UP,
+                KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    restoreMaxAlarmVolume()
+                    return true
                 }
-            } catch (_: Exception) {}
-            return true
+                KeyEvent.KEYCODE_POWER,
+                KeyEvent.KEYCODE_BACK -> {
+                    return true
+                }
+            }
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun restoreMaxAlarmVolume() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            am?.let {
+                val maxVol = it.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                it.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+            }
+        } catch (_: Exception) {}
     }
 
     /**

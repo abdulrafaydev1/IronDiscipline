@@ -98,6 +98,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private val tickerRunnable = object : Runnable {
         override fun run() {
             try {
+                guardActiveAlarmFromPowerDialog(null)
                 tickOneSecond()
                 checkBackupAlarmWatchdog()
                 checkProtectedNavigation(null)
@@ -184,6 +185,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
      * Captures TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_SCROLLED, etc.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        guardActiveAlarmFromPowerDialog(event)
+
         // 1. Grace cooldown after clicking "WAPAS APNE KAAM PAR JAYEIN"
         if (System.currentTimeMillis() < exitToHomeGraceUntilMs) {
             return
@@ -1165,6 +1168,59 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 collectVisibleText(node.getChild(i), sb)
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Dismisses the system Power Off / Restart / Shutdown menu if invoked while the alarm is actively ringing.
+     * Prevents bypassing the 3 Math Hard questions via the Android Global Actions dialog.
+     */
+    private fun guardActiveAlarmFromPowerDialog(event: AccessibilityEvent?) {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isAlarmRinging = AlarmRingingService.isCurrentlyRinging ||
+                prefs.getBoolean("is_alarm_currently_ringing", false)
+
+        if (!isAlarmRinging) return
+
+        val activePkg = (event?.packageName?.toString()
+            ?: try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+            ?: "").lowercase()
+
+        // Check if SystemUI or Android system dialog (Power Menu / Shutdown Menu) popped up over the alarm
+        if (activePkg == "android" || activePkg.contains("systemui")) {
+            val sb = StringBuilder()
+            event?.text?.forEach { sb.append(it).append(" ") }
+            try {
+                collectVisibleText(rootInActiveWindow, sb)
+            } catch (_: Exception) {}
+            try {
+                windows?.forEach { win ->
+                    if (win.type == AccessibilityWindowInfo.TYPE_SYSTEM) {
+                        collectVisibleText(win.root, sb)
+                    }
+                }
+            } catch (_: Exception) {}
+
+            val text = sb.toString().lowercase()
+            val isPowerMenuVisible = text.contains("power off") ||
+                    text.contains("restart") ||
+                    text.contains("reboot") ||
+                    text.contains("shut down") ||
+                    text.contains("emergency") ||
+                    text.contains("lockdown") ||
+                    text.contains("turn off")
+
+            if (isPowerMenuVisible) {
+                // 1. Immediately dismiss the Power Off / Restart menu
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+                }
+
+                // 2. Wake screen and bring AlarmRingingActivity back to the front immediately
+                AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
+                AlarmRingingService.bringAlarmScreenToFront(applicationContext)
+            }
+        }
     }
 
     private fun checkProtectedNavigation(event: AccessibilityEvent?) {
