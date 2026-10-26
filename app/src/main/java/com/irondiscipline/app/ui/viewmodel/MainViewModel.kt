@@ -1,6 +1,14 @@
 package com.irondiscipline.app.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.irondiscipline.app.data.local.IronDisciplineDatabase
@@ -10,6 +18,7 @@ import com.irondiscipline.app.data.local.entities.DeepWorkSession
 import com.irondiscipline.app.data.local.entities.DisciplineStateEntity
 import com.irondiscipline.app.data.local.entities.ScheduleBlock
 import com.irondiscipline.app.data.repository.DisciplineRepository
+import com.irondiscipline.app.domain.model.AppLockerItem
 import com.irondiscipline.app.domain.model.InstalledAppInfo
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.service.AppBlockerAccessibilityService
@@ -29,6 +38,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -66,6 +76,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val todayDateString: String
         get() = LocalDate.now().toString()
+
+    private val prefs = context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, Context.MODE_PRIVATE)
+
+    // --- Master App Password & Self-Lock State ---
+    private val _isMasterPasswordEnabled = MutableStateFlow(
+        prefs.getBoolean("is_master_password_enabled", false)
+    )
+    val isMasterPasswordEnabled: StateFlow<Boolean> = _isMasterPasswordEnabled.asStateFlow()
+
+    private val _isAppUnlockedSession = MutableStateFlow(false)
+    val isAppUnlockedSession: StateFlow<Boolean> = _isAppUnlockedSession.asStateFlow()
+
+    // --- Universal Phone App Locker State ---
+    private val _customPasswordLockedPackages = MutableStateFlow<Set<String>>(
+        prefs.getStringSet("custom_password_locked_packages", emptySet())?.toSet() ?: emptySet()
+    )
+    val customPasswordLockedPackages: StateFlow<Set<String>> = _customPasswordLockedPackages.asStateFlow()
+
+    fun unlockSession() {
+        _isAppUnlockedSession.value = true
+    }
+
+    fun lockSession() {
+        _isAppUnlockedSession.value = false
+    }
+
+    fun verifyMasterPassword(entered: String): Boolean {
+        val saved = prefs.getString("master_app_password", "") ?: ""
+        return saved.isNotEmpty() && saved == entered.trim()
+    }
+
+    fun setMasterPassword(password: String) {
+        val trimmed = password.trim()
+        prefs.edit()
+            .putString("master_app_password", trimmed)
+            .putBoolean("is_master_password_enabled", true)
+            .commit()
+        _isMasterPasswordEnabled.value = true
+        _isAppUnlockedSession.value = false // Immediately lock app!
+        postBannerMessage("Master Password saved. IronDiscipline is now locked.")
+    }
+
+    fun toggleCustomPackageLock(packageName: String, shouldLock: Boolean) {
+        val currentSet = prefs.getStringSet("custom_password_locked_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (shouldLock) {
+            currentSet.add(packageName)
+        } else {
+            currentSet.remove(packageName)
+        }
+        prefs.edit()
+            .putStringSet("custom_password_locked_packages", HashSet(currentSet))
+            .commit()
+        _customPasswordLockedPackages.value = currentSet.toSet()
+    }
+
+    suspend fun loadInstalledLauncherApps(): List<AppLockerItem> = withContext(Dispatchers.IO) {
+        val pm = context.packageManager
+        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val resolveInfos = pm.queryIntentActivities(launcherIntent, 0)
+
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+        }
+        val homePackages = pm.queryIntentActivities(homeIntent, 0)
+            .mapNotNull { it.activityInfo?.packageName }
+            .toSet()
+
+        val myPkg = context.packageName
+        val lockedSet = _customPasswordLockedPackages.value
+
+        val items = resolveInfos.mapNotNull { info ->
+            val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+            if (pkg == myPkg || pkg == "com.android.systemui" || homePackages.contains(pkg)) {
+                return@mapNotNull null
+            }
+            val label = try { info.loadLabel(pm)?.toString() ?: pkg } catch (_: Exception) { pkg }
+            val iconDrawable = try { info.loadIcon(pm) } catch (_: Exception) { null }
+            val iconBitmap = iconDrawable?.toBitmapOrNull()
+            AppLockerItem(
+                packageName = pkg,
+                appName = label,
+                iconBitmap = iconBitmap,
+                isLocked = lockedSet.contains(pkg)
+            )
+        }.distinctBy { it.packageName }
+
+        items.sortedWith(
+            compareByDescending<AppLockerItem> { it.isLocked }
+                .thenBy { it.appName.lowercase() }
+        )
+    }
 
     // --- Real-Time 1-Second Quota Snapshot Flow (30-Min Normal Mode & 1-Min Test Mode) ---
     val realtimeQuotaState: StateFlow<RealtimeQuotaSnapshot> = realtimeQuotaManager.quotaSnapshotFlow
@@ -519,5 +622,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }, 300L)
         }
+    }
+}
+
+fun Drawable.toBitmapOrNull(): ImageBitmap? {
+    return try {
+        val bmp = if (this is BitmapDrawable && this.bitmap != null) {
+            this.bitmap
+        } else {
+            val width = intrinsicWidth.takeIf { it > 0 } ?: 96
+            val height = intrinsicHeight.takeIf { it > 0 } ?: 96
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            setBounds(0, 0, canvas.width, canvas.height)
+            draw(canvas)
+            bitmap
+        }
+        bmp.asImageBitmap()
+    } catch (_: Exception) {
+        null
     }
 }

@@ -52,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,13 +68,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.irondiscipline.app.FocusDeviceAdminReceiver
+import com.irondiscipline.app.domain.model.AppLockerItem
 import com.irondiscipline.app.domain.model.PermissionStatusState
+import com.irondiscipline.app.ui.components.CreatePasswordDialog
+import com.irondiscipline.app.ui.components.LockPhoneAppsDialog
 import com.irondiscipline.app.ui.components.UninstallPinDialog
 import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.util.CoreAppQuotaStatus
 import com.irondiscipline.app.util.CoreTargetApp
 import com.irondiscipline.app.util.PermissionHelper
 import com.irondiscipline.app.util.RealtimeQuotaSnapshot
+import kotlinx.coroutines.launch
 
 // Obsidian Cyber-Discipline Color Palette
 private val ColorObsidianDeep = Color(0xFF06080E)
@@ -103,6 +108,11 @@ private val TikTokGradient = listOf(Color(0xFF00F2FE), Color(0xFFFE0979))
 fun DashboardScreen(
     realtimeQuotaState: RealtimeQuotaSnapshot,
     permissionState: PermissionStatusState,
+    isMasterPasswordEnabled: Boolean = false,
+    lockedPackages: Set<String> = emptySet(),
+    onSetMasterPassword: (String) -> Unit = {},
+    onToggleCustomPackageLock: (String, Boolean) -> Unit = { _, _ -> },
+    onLoadInstalledApps: suspend () -> List<AppLockerItem> = { emptyList() },
     onActivateOneMinuteTestMode: () -> Unit,
     onSwitchBackToNormalThirtyMinMode: () -> Unit,
     onRefreshPermissions: () -> Unit = {},
@@ -110,9 +120,14 @@ fun DashboardScreen(
     onConfirmUninstall: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
     val isTestMode = realtimeQuotaState.isTestModeActive
     var showUninstallPinDialog by remember { mutableStateOf(false) }
+    var showCreatePasswordDialog by remember { mutableStateOf(false) }
+    var showLockPhoneAppsDialog by remember { mutableStateOf(false) }
+    var installedAppsList by remember { mutableStateOf<List<AppLockerItem>>(emptyList()) }
+    var isLoadingApps by remember { mutableStateOf(false) }
 
     if (showUninstallPinDialog) {
         UninstallPinDialog(
@@ -122,6 +137,27 @@ fun DashboardScreen(
                 showUninstallPinDialog = false
                 onConfirmUninstall()
             }
+        )
+    }
+
+    if (showCreatePasswordDialog) {
+        CreatePasswordDialog(
+            isChangePassword = isMasterPasswordEnabled,
+            onDismiss = { showCreatePasswordDialog = false },
+            onConfirmPassword = { newPass ->
+                showCreatePasswordDialog = false
+                onSetMasterPassword(newPass)
+            }
+        )
+    }
+
+    if (showLockPhoneAppsDialog) {
+        LockPhoneAppsDialog(
+            installedApps = installedAppsList,
+            lockedPackages = lockedPackages,
+            onToggleLock = onToggleCustomPackageLock,
+            onDismiss = { showLockPhoneAppsDialog = false },
+            isLoading = isLoadingApps
         )
     }
 
@@ -197,6 +233,27 @@ fun DashboardScreen(
             onActivateOneMinuteTestMode = onActivateOneMinuteTestMode,
             onSwitchBackToNormalThirtyMinMode = onSwitchBackToNormalThirtyMinMode,
             onDeleteAppClick = { showUninstallPinDialog = true }
+        )
+
+        // 4.5 Master App Password & Phone App Locker Section
+        MasterSecurityVaultCard(
+            isMasterPasswordEnabled = isMasterPasswordEnabled,
+            lockedAppsCount = lockedPackages.size,
+            onManagePasswordClick = {
+                showCreatePasswordDialog = true
+            },
+            onLockPhoneAppsClick = {
+                if (!isMasterPasswordEnabled) {
+                    showCreatePasswordDialog = true
+                } else {
+                    showLockPhoneAppsDialog = true
+                    coroutineScope.launch {
+                        isLoadingApps = true
+                        installedAppsList = onLoadInstalledApps()
+                        isLoadingApps = false
+                    }
+                }
+            }
         )
 
         // 5. Section Header
@@ -1089,6 +1146,134 @@ fun DeviceAdminSetupBannerCard(
                     text = "Activate Protection Shield",
                     fontWeight = FontWeight.Black,
                     fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MasterSecurityVaultCard(
+    isMasterPasswordEnabled: Boolean,
+    lockedAppsCount: Int,
+    onManagePasswordClick: () -> Unit,
+    onLockPhoneAppsClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    listOf(Color(0xFF26334D), Color(0xFF141B29))
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = ColorElevatedSlate)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "MASTER SECURITY & APP LOCKER",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.8.sp
+                    )
+                }
+
+                // Status pill
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isMasterPasswordEnabled) Color(0x2600E676) else Color(0x26FFB300))
+                        .border(
+                            1.dp,
+                            if (isMasterPasswordEnabled) Color(0xFF00E676) else Color(0xFFFFB300),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = if (isMasterPasswordEnabled) "PROTECTED" else "PASSWORD NOT SET",
+                        color = if (isMasterPasswordEnabled) Color(0xFF00E676) else Color(0xFFFFB300),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 9.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Button 1: Create or Change Password & Lock Now
+            Button(
+                onClick = onManagePasswordClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .jellyElastic(baseCornerRadius = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (!isMasterPasswordEnabled) Color(0xFF38BDF8) else Color(0xFF1E293B),
+                    contentColor = if (!isMasterPasswordEnabled) Color(0xFF06080E) else Color(0xFF38BDF8)
+                ),
+                border = if (isMasterPasswordEnabled) BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)) else null
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (!isMasterPasswordEnabled) "🔐 Create App Password" else "🔐 Change Password / Lock App Now",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Button 2: Lock Phone Apps
+            Button(
+                onClick = onLockPhoneAppsClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .jellyElastic(baseCornerRadius = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF161F30),
+                    contentColor = Color(0xFFFFFFFF)
+                ),
+                border = BorderStroke(1.dp, Color(0xFF2E3E58))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Layers,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "🔒 Lock Phone Apps ($lockedAppsCount Locked)",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
                 )
             }
         }

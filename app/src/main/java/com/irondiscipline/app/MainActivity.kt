@@ -44,6 +44,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.irondiscipline.app.alarm.AlarmRepository
 import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.ui.screens.AlarmScreen
+import com.irondiscipline.app.ui.screens.AppPasswordGateScreen
 import com.irondiscipline.app.ui.screens.DashboardScreen
 import com.irondiscipline.app.ui.screens.SettingsScreen
 import com.irondiscipline.app.ui.theme.IronDisciplineTheme
@@ -52,6 +53,10 @@ import com.irondiscipline.app.ui.viewmodel.MainViewModel
 class MainActivity : ComponentActivity() {
 
     private val mainViewModel: MainViewModel by viewModels()
+
+    companion object {
+        var isNavigatingToSystemIntent = false
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +75,15 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         IronDisciplineApp.isMainActivityVisible = false
         super.onPause()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isNavigatingToSystemIntent) {
+            mainViewModel.lockSession()
+        } else {
+            isNavigatingToSystemIntent = false
+        }
     }
 }
 
@@ -120,6 +134,25 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
             snackbarHostState.showSnackbar(msg)
             viewModel.clearBannerMessage()
         }
+    }
+
+    val isMasterPasswordEnabled by viewModel.isMasterPasswordEnabled.collectAsState()
+    val isAppUnlockedSession by viewModel.isAppUnlockedSession.collectAsState()
+    val customPasswordLockedPackages by viewModel.customPasswordLockedPackages.collectAsState()
+
+    if (isMasterPasswordEnabled && !isAppUnlockedSession) {
+        AppPasswordGateScreen(
+            onUnlockSuccess = {
+                viewModel.unlockSession()
+            },
+            onVerifyPassword = { entered ->
+                viewModel.verifyMasterPassword(entered)
+            },
+            onExitToHome = {
+                (context as? ComponentActivity)?.moveTaskToBack(true)
+            }
+        )
+        return
     }
 
     Scaffold(
@@ -233,6 +266,11 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
                 0 -> DashboardScreen(
                     realtimeQuotaState = realtimeQuotaState,
                     permissionState = permissionState,
+                    isMasterPasswordEnabled = isMasterPasswordEnabled,
+                    lockedPackages = customPasswordLockedPackages,
+                    onSetMasterPassword = viewModel::setMasterPassword,
+                    onToggleCustomPackageLock = viewModel::toggleCustomPackageLock,
+                    onLoadInstalledApps = viewModel::loadInstalledLauncherApps,
                     onActivateOneMinuteTestMode = viewModel::activateOneMinuteTestMode,
                     onSwitchBackToNormalThirtyMinMode = viewModel::switchBackToNormalThirtyMinModeAndReset,
                     onRefreshPermissions = viewModel::refreshPermissionsAndApps,

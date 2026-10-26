@@ -16,23 +16,29 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
+import android.text.InputType
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.view.animation.OvershootInterpolator
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.irondiscipline.app.FocusDeviceAdminReceiver
@@ -68,6 +74,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private var overlayCountdownTextView: TextView? = null
     private var blockedAppSubtitleTextView: TextView? = null
     private var countdownLabelTextView: TextView? = null
+
+    // Master Password Universal App Locker State
+    private var unlockedCustomAppPackage: String? = null
+    private var isPasswordOverlayShowing: Boolean = false
+    private var passwordOverlayView: View? = null
+    private var currentlyLockedTargetPkg: String? = null
 
     @Volatile
     private var exitToHomeGraceUntilMs: Long = 0L
@@ -135,6 +147,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         mainHandler.removeCallbacks(tickerRunnable)
         hideFloatingTimerPill()
         hideBlockOverlay()
+        hidePasswordLockOverlay()
         if (instance === this) {
             instance = null
         }
@@ -200,11 +213,22 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         if (com.irondiscipline.app.util.SecurityPinManager.isUninstallSessionActive(this)) {
             hideFloatingTimerPill()
             hideBlockOverlay()
+            hidePasswordLockOverlay()
             return
         }
 
         // CRITICAL LATCH RULE: While isBlockOverlayShowing == true, NEVER auto-hide on window events!
         if (isBlockOverlayShowing && latchedLockedAppKey != null) {
+            return
+        }
+
+        // CRITICAL LATCH RULE for Password Overlay: While showing, do NOT dismiss on keyboard or app redraws
+        if (isPasswordOverlayShowing && currentlyLockedTargetPkg != null) {
+            val eventPkg = safeEvent.packageName?.toString()
+            if (eventPkg != null && isHomeLauncherPackage(eventPkg)) {
+                unlockedCustomAppPackage = null
+                hidePasswordLockOverlay()
+            }
             return
         }
 
@@ -226,39 +250,99 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             // If user opened IronDiscipline MainActivity or Home Launcher, clear current target
             if ((validPkg == packageName && IronDisciplineApp.isMainActivityVisible) || isHomeLauncherPackage(validPkg)) {
                 currentTargetAppKey = null
+                unlockedCustomAppPackage = null
                 hideFloatingTimerPill()
                 if (isBlockOverlayShowing) {
                     hideBlockOverlay()
+                }
+                if (isPasswordOverlayShowing) {
+                    hidePasswordLockOverlay()
                 }
                 realtimeQuotaManager.publishSnapshot()
                 return
             }
 
+            // If user navigated away from the currently unlocked custom package, re-lock it
+            if (unlockedCustomAppPackage != null && validPkg != unlockedCustomAppPackage) {
+                unlockedCustomAppPackage = null
+            }
+
+            // Priority 1: Flagship 5-Hour Lock Check
             val matchedKey = resolveTargetAppKey(validPkg)
+            val lockRem = if (matchedKey != null) prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0) else 0
+            val isTestMode = prefs.getBoolean("is_test_mode", false) || prefs.getBoolean("is_one_minute_test_mode", false)
+            val limitSec = if (isTestMode) 60 else 1800
+            val usedSec = if (matchedKey != null) prefs.getInt(PREFIX_USED_SEC + matchedKey, 0) else 0
+
+            if (matchedKey != null && (lockRem > 0 || usedSec >= limitSec)) {
+                val remSec = if (lockRem > 0) lockRem else FIVE_HOURS_SECONDS
+                if (isPasswordOverlayShowing) {
+                    hidePasswordLockOverlay()
+                }
+                hideFloatingTimerPill()
+                latchedLockedAppKey = matchedKey
+                showOrUpdateBlockOverlay(matchedKey, remSec)
+                stopVideoAndSilenceAudio()
+                return
+            }
+
+            // Priority 2: Custom Master Password Lock Check
+            val isMasterPasswordEnabled = prefs.getBoolean("is_master_password_enabled", false)
+            val customLockedPackages = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
+
+            if (isMasterPasswordEnabled && customLockedPackages.contains(validPkg)) {
+                if (unlockedCustomAppPackage != validPkg) {
+                    hideFloatingTimerPill()
+                    if (isBlockOverlayShowing) {
+                        hideBlockOverlay()
+                    }
+                    showPasswordLockOverlay(validPkg)
+                    stopVideoAndSilenceAudio()
+                    return
+                }
+            }
+
+            // Priority 3: Normal Quota Tracking
             if (matchedKey != null) {
                 currentTargetAppKey = matchedKey
                 lastTargetSeenTimestamp = System.currentTimeMillis()
-
-                val lockRem = prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0)
-                val isTestMode = prefs.getBoolean("is_test_mode", false) || prefs.getBoolean("is_one_minute_test_mode", false)
-                val limitSec = if (isTestMode) 60 else 1800
-                val usedSec = prefs.getInt(PREFIX_USED_SEC + matchedKey, 0)
-
-                if (lockRem > 0 || usedSec >= limitSec) {
-                    val remSec = if (lockRem > 0) lockRem else FIVE_HOURS_SECONDS
-                    hideFloatingTimerPill()
-                    latchedLockedAppKey = matchedKey
-                    showOrUpdateBlockOverlay(matchedKey, remSec)
-                    stopVideoAndSilenceAudio()
-                }
             } else if (safeEvent.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
                 currentTargetAppKey = null
                 hideFloatingTimerPill()
                 if (isBlockOverlayShowing && latchedLockedAppKey == null) {
                     hideBlockOverlay()
                 }
+                if (isPasswordOverlayShowing && currentlyLockedTargetPkg != validPkg) {
+                    hidePasswordLockOverlay()
+                }
             }
         }
+    }
+
+    private fun detectCurrentForegroundPackage(): String? {
+        try {
+            val windowList = try { getWindows() } catch (_: Exception) { null }
+            if (!windowList.isNullOrEmpty()) {
+                for (window in windowList) {
+                    if (window != null && window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        val rootNode = try { window.root } catch (_: Exception) { null }
+                        val winPkg = rootNode?.packageName?.toString()
+                        if (!isIgnoredSystemPackage(winPkg)) {
+                            return winPkg
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val rootPkg = rootInActiveWindow?.packageName?.toString()
+            if (!isIgnoredSystemPackage(rootPkg)) {
+                return rootPkg
+            }
+        } catch (_: Exception) {}
+
+        return if (lastDetectedPackage.isNotEmpty() && !isIgnoredSystemPackage(lastDetectedPackage)) lastDetectedPackage else null
     }
 
     /**
@@ -520,6 +604,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
+        // Screen-off auto-relock: if screen is turned off, reset custom app unlock session
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (pm?.isInteractive == false) {
+            unlockedCustomAppPackage = null
+        }
+
+        // CRITICAL LATCH CHECK: If password lock overlay is showing, stay latched and audio muted!
+        if (isPasswordOverlayShowing && currentlyLockedTargetPkg != null) {
+            stopVideoAndSilenceAudio()
+            return
+        }
+
         // CRITICAL LATCH CHECK: If block overlay is currently showing, keep it strictly latched!
         if (isBlockOverlayShowing && latchedLockedAppKey != null) {
             val key = latchedLockedAppKey!!
@@ -552,11 +648,42 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         // If inside Dashboard or Home Launcher, ensure overlay and pill are hidden
         if (IronDisciplineApp.isMainActivityVisible || isHomeLauncherPackage(lastDetectedPackage) || (lastDetectedPackage == packageName && IronDisciplineApp.isMainActivityVisible)) {
             hideFloatingTimerPill()
+            unlockedCustomAppPackage = null
             if (isBlockOverlayShowing) {
                 hideBlockOverlay()
             }
+            if (isPasswordOverlayShowing) {
+                hidePasswordLockOverlay()
+            }
             realtimeQuotaManager.publishSnapshot()
             return
+        }
+
+        // Step A.5 — Check Background Custom Password Locked Applications:
+        val activeForegroundPkg = detectCurrentForegroundPackage()
+        val isMasterPasswordEnabled = prefs.getBoolean("is_master_password_enabled", false)
+        val customLockedPackages = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
+
+        if (activeForegroundPkg != null && !isIgnoredSystemPackage(activeForegroundPkg)) {
+            if (unlockedCustomAppPackage != null && activeForegroundPkg != unlockedCustomAppPackage && activeForegroundPkg != packageName) {
+                unlockedCustomAppPackage = null
+            }
+
+            if (isMasterPasswordEnabled && customLockedPackages.contains(activeForegroundPkg)) {
+                val matchedKey = resolveTargetAppKey(activeForegroundPkg)
+                val lockRem = if (matchedKey != null) prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0) else 0
+
+                // If not currently serving 5-hour penalty and not unlocked in this session
+                if (lockRem <= 0 && unlockedCustomAppPackage != activeForegroundPkg) {
+                    hideFloatingTimerPill()
+                    if (isBlockOverlayShowing) {
+                        hideBlockOverlay()
+                    }
+                    showPasswordLockOverlay(activeForegroundPkg)
+                    stopVideoAndSilenceAudio()
+                    return
+                }
+            }
         }
 
         // Step B — Active App Detection & 1-Second Synchronous Ticking:
@@ -1111,6 +1238,387 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         hideBlockOverlay()
     }
 
+    fun hidePasswordLockOverlay() {
+        val view = passwordOverlayView ?: return
+        passwordOverlayView = null
+        isPasswordOverlayShowing = false
+        currentlyLockedTargetPkg = null
+
+        restoreAudioCleanly()
+
+        try {
+            windowManager?.removeViewImmediate(view)
+        } catch (_: Exception) {}
+    }
+
+    fun showPasswordLockOverlay(targetPkg: String) {
+        if (isPasswordOverlayShowing && currentlyLockedTargetPkg == targetPkg && passwordOverlayView != null) {
+            return
+        }
+
+        val wm = windowManager ?: return
+        hideFloatingTimerPill()
+        if (isBlockOverlayShowing) {
+            hideBlockOverlay()
+        }
+        stopVideoAndSilenceAudio()
+
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastInterceptVibrationMs > 1500L) {
+            lastInterceptVibrationMs = nowMs
+            vibrateWarningPulse()
+        }
+
+        val pm = packageManager
+        val appName = try {
+            val appInfo = pm.getApplicationInfo(targetPkg, 0)
+            pm.getApplicationLabel(appInfo).toString()
+        } catch (_: Exception) {
+            targetPkg
+        }
+
+        try {
+            if (passwordOverlayView != null) {
+                try { wm.removeViewImmediate(passwordOverlayView) } catch (_: Exception) {}
+                passwordOverlayView = null
+            }
+
+            val view = buildNativePasswordLockOverlayView(appName, targetPkg)
+            val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                layoutType,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.CENTER
+                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            }
+
+            try {
+                wm.addView(view, params)
+                passwordOverlayView = view
+                isPasswordOverlayShowing = true
+                currentlyLockedTargetPkg = targetPkg
+            } catch (_: Exception) {
+                if (Settings.canDrawOverlays(this)) {
+                    try {
+                        params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        wm.addView(view, params)
+                        passwordOverlayView = view
+                        isPasswordOverlayShowing = true
+                        currentlyLockedTargetPkg = targetPkg
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun buildNativePasswordLockOverlayView(
+        appName: String,
+        targetPkg: String
+    ): View {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        val rootFrame = object : FrameLayout(this) {
+            override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+                if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                    exitToHomeGraceUntilMs = System.currentTimeMillis() + 600L
+                    currentTargetAppKey = null
+                    lastDetectedPackage = ""
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    hidePasswordLockOverlay()
+                    return true
+                }
+                return super.dispatchKeyEvent(event)
+            }
+        }.apply {
+            setBackgroundColor(Color.parseColor("#070A0F"))
+            isClickable = true
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+        }
+
+        val scrollView = ScrollView(this).apply {
+            isFillViewport = true
+        }
+
+        val centerContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
+
+        // Vault Card (#141B29, 24dp corner radius, 2dp glowing Cyan border #38BDF8)
+        val vaultCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(24).toFloat()
+                setColor(Color.parseColor("#141B29"))
+                setStroke(dp(2), Color.parseColor("#38BDF8"))
+            }
+            setPadding(dp(24), dp(28), dp(24), dp(28))
+        }
+
+        // 1. Lock Badge Icon
+        val badgeFrame = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#1A2536"))
+                setStroke(dp(1), Color.parseColor("#38BDF8"))
+            }
+        }
+        val badgeTv = TextView(this).apply {
+            text = "🔒"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            gravity = Gravity.CENTER
+        }
+        badgeFrame.addView(
+            badgeTv,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply { gravity = Gravity.CENTER }
+        )
+        vaultCard.addView(badgeFrame, LinearLayout.LayoutParams(dp(56), dp(56)).apply {
+            bottomMargin = dp(12)
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+
+        // 2. Lock Header: "🔒 APP LOCKED"
+        val headerTv = TextView(this).apply {
+            text = "🔒 APP LOCKED"
+            setTextColor(Color.parseColor("#38BDF8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.15f
+            gravity = Gravity.CENTER
+        }
+        vaultCard.addView(headerTv)
+
+        // 3. App Name Title: "[AppName] Lock Hai"
+        val titleTv = TextView(this).apply {
+            text = "$appName Lock Hai"
+            setTextColor(Color.parseColor("#FFFFFF"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, dp(8))
+        }
+        vaultCard.addView(titleTv)
+
+        // 4. Subtitle
+        val subtitleTv = TextView(this).apply {
+            text = "Is app ko open karne ke liye apna IronDiscipline Master Password enter karein."
+            setTextColor(Color.parseColor("#94A3B8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(18))
+        }
+        vaultCard.addView(subtitleTv)
+
+        // 5. Password Input (EditText)
+        val passwordInput = EditText(this).apply {
+            hint = "Enter Master Password"
+            setHintTextColor(Color.parseColor("#64748B"))
+            setTextColor(Color.parseColor("#FFFFFF"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#0B0F17"))
+                setStroke(dp(1), Color.parseColor("#26334D"))
+            }
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        vaultCard.addView(passwordInput, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = dp(10)
+        })
+
+        // 6. Error TextView
+        val errorTv = TextView(this).apply {
+            text = "❌ Galat Password! Dobara koshish karein."
+            setTextColor(Color.parseColor("#FF2E54"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setPadding(0, 0, 0, dp(12))
+        }
+        vaultCard.addView(errorTv)
+
+        // 7. Primary Button — "🔓 UNLOCK APP"
+        val unlockBtn = Button(this).apply {
+            text = "🔓 UNLOCK APP"
+            isAllCaps = false
+            setTextColor(Color.parseColor("#06080E"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.05f
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.parseColor("#38BDF8"))
+            }
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+            setOnClickListener {
+                val entered = passwordInput.text.toString().trim()
+                val masterPassword = prefs.getString("master_app_password", "") ?: ""
+                if (masterPassword.isNotEmpty() && entered == masterPassword) {
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.hideSoftInputFromWindow(passwordInput.windowToken, 0)
+
+                    unlockedCustomAppPackage = targetPkg
+                    hidePasswordLockOverlay()
+                } else {
+                    errorTv.visibility = View.VISIBLE
+                    passwordInput.setText("")
+                    vibrateWarningPulse()
+                }
+            }
+        }
+        applyJellyElasticToNativeButton(unlockBtn)
+        vaultCard.addView(unlockBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = dp(12)
+        })
+
+        // 8. Secondary Button — "🏠 Wapas Home Screen Par Jayein"
+        val homeBtn = Button(this).apply {
+            text = "🏠 Wapas Home Screen Par Jayein"
+            isAllCaps = false
+            setTextColor(Color.parseColor("#94A3B8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1), Color.parseColor("#26334D"))
+            }
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.hideSoftInputFromWindow(passwordInput.windowToken, 0)
+
+                exitToHomeGraceUntilMs = System.currentTimeMillis() + 600L
+                currentTargetAppKey = null
+                lastDetectedPackage = ""
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                hidePasswordLockOverlay()
+            }
+        }
+        applyJellyElasticToNativeButton(homeBtn)
+        vaultCard.addView(homeBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        centerContainer.addView(vaultCard, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER
+        })
+
+        scrollView.addView(centerContainer, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER
+        })
+
+        rootFrame.addView(scrollView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
+        return rootFrame
+    }
+
+    private fun applyJellyElasticToNativeButton(btn: Button) {
+        var downX = 0f
+        var downY = 0f
+        var isDragging = false
+        val touchSlop = dp(8).toFloat()
+        val maxDragPx = dp(32).toFloat()
+        val dragResistance = dp(95).toFloat()
+
+        btn.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    isDragging = false
+                    v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (!isDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                        isDragging = true
+                    }
+                    if (isDragging) {
+                        val normX = tanh(dx / dragResistance)
+                        val normY = tanh(dy / dragResistance)
+                        val transX = normX * maxDragPx
+                        val transY = normY * maxDragPx
+                        val scaleX = (1f + (abs(normX) * 0.35f) - (abs(normY) * 0.08f)).coerceIn(0.88f, 1.4f)
+                        val scaleY = (1f + (abs(normY) * 0.35f) - (abs(normX) * 0.08f)).coerceIn(0.88f, 1.4f)
+                        v.translationX = transX
+                        v.translationY = transY
+                        v.scaleX = scaleX
+                        v.scaleY = scaleY
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (isDragging) {
+                        v.animate()
+                            .translationX(0f)
+                            .translationY(0f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(380)
+                            .setInterpolator(OvershootInterpolator(2.0f))
+                            .start()
+                        isDragging = false
+                        true
+                    } else {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                        v.performClick()
+                        true
+                    }
+                }
+                else -> false
+            }
+        }
+    }
+
     /**
      * Emergency / Authorized Disarm:
      * Cleans up all overlays, audio muting, ticker callbacks, and shuts down the AccessibilityService.
@@ -1118,6 +1626,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     fun disarmAndDisable() {
         hideFloatingTimerPill()
         hideBlockOverlay()
+        hidePasswordLockOverlay()
         restoreAudioCleanly()
         mainHandler.removeCallbacks(tickerRunnable)
         disableSelf()
@@ -1323,6 +1832,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             Handler(Looper.getMainLooper()).post {
                 service.hideFloatingTimerPill()
                 service.hideBlockOverlay()
+                service.hidePasswordLockOverlay()
             }
         }
 
@@ -1345,6 +1855,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 Handler(Looper.getMainLooper()).post {
                     service.hideFloatingTimerPill()
                     service.hideBlockOverlay()
+                    service.hidePasswordLockOverlay()
                     service.restoreAudioCleanly()
                 }
             }
