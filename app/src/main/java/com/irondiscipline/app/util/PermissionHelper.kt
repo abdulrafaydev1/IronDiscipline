@@ -169,6 +169,10 @@ object PermissionHelper {
         return ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
     }
 
+    fun getDevicePolicyManager(context: Context): DevicePolicyManager? {
+        return context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+    }
+
     fun isDeviceAdminActive(context: Context): Boolean {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
         val adminComponent = getDeviceAdminComponent(context)
@@ -320,14 +324,14 @@ object PermissionHelper {
 
         return try {
             // 1. Whitelist our package for Lock Task mode if not already whitelisted
-            val currentPackages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                dpm.getLockTaskPackages(admin)
+            val currentPackages: Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                dpm.getLockTaskPackages(admin) ?: emptyArray<String>()
             } else {
-                emptyArray()
+                emptyArray<String>()
             }
 
             if (!currentPackages.contains(pkg)) {
-                val updatedPackages = (currentPackages.toSet() + pkg).toTypedArray()
+                val updatedPackages: Array<String> = (currentPackages.toSet() + pkg).toTypedArray()
                 dpm.setLockTaskPackages(admin, updatedPackages)
                 Log.i("PermissionHelper", "Added $pkg to LockTask whitelisted packages")
             }
