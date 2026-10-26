@@ -76,10 +76,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private var countdownLabelTextView: TextView? = null
 
     // Master Password Universal App Locker State
+    private var lastRawForegroundPackage: String = ""
     private var unlockedCustomAppPackage: String? = null
     private var isPasswordOverlayShowing: Boolean = false
+    private var latchedPasswordLockedPkg: String? = null
     private var passwordOverlayView: View? = null
-    private var currentlyLockedTargetPkg: String? = null
+    private var exitCustomLockGraceUntilMs: Long = 0L
 
     @Volatile
     private var exitToHomeGraceUntilMs: Long = 0L
@@ -194,14 +196,58 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Retrieves the set of custom packages locked by Master Password.
+     * Uses CSV backup storage to prevent Android SharedPreferences StringSet multi-process cache bugs.
+     */
+    private fun getCustomLockedPackages(prefs: SharedPreferences): Set<String> {
+        val csv = prefs.getString("custom_locked_packages_csv", null)
+        if (!csv.isNullOrBlank()) {
+            return csv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+        }
+        val set = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
+        return set.map { it.trim().lowercase() }.toSet()
+    }
+
+    /**
+     * Checks if the given raw package is marked as locked by Master Password and intercepts it immediately.
+     */
+    private fun checkAndEnforceCustomAppLock(rawPkg: String) {
+        if (System.currentTimeMillis() < exitToHomeGraceUntilMs || System.currentTimeMillis() < exitCustomLockGraceUntilMs) {
+            return
+        }
+        if (isBlockOverlayShowing) return
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val masterPassword = prefs.getString("master_app_password", "") ?: ""
+        val isPasswordEnabled = prefs.getBoolean("is_master_password_enabled", false) && masterPassword.isNotEmpty()
+        if (!isPasswordEnabled) return
+
+        val normalizedPkg = rawPkg.trim().lowercase()
+        val lockedSet = getCustomLockedPackages(prefs)
+        if (!lockedSet.contains(normalizedPkg)) return
+
+        if (unlockedCustomAppPackage == normalizedPkg) return
+
+        val matchedKey = resolveTargetAppKey(normalizedPkg)
+        val lockRem = if (matchedKey != null) prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0) else 0
+        if (lockRem > 0) return // Defer to 5-hour lock overlay
+
+        hideFloatingTimerPill()
+        if (isBlockOverlayShowing) {
+            hideBlockOverlay()
+        }
+        showPasswordLockOverlay(normalizedPkg)
+    }
+
+    /**
      * Instant Event Interception:
      * Captures TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_SCROLLED, etc.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         guardActiveAlarmFromPowerDialog(event)
 
-        // 1. Grace cooldown after clicking "WAPAS APNE KAAM PAR JAYEIN"
-        if (System.currentTimeMillis() < exitToHomeGraceUntilMs) {
+        // 1. Grace cooldown after clicking "WAPAS APNE KAAM PAR JAYEIN" or returning Home
+        if (System.currentTimeMillis() < exitToHomeGraceUntilMs || System.currentTimeMillis() < exitCustomLockGraceUntilMs) {
             return
         }
 
@@ -223,8 +269,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // CRITICAL LATCH RULE for Password Overlay: While showing, do NOT dismiss on keyboard or app redraws
-        if (isPasswordOverlayShowing && currentlyLockedTargetPkg != null) {
-            val eventPkg = safeEvent.packageName?.toString()
+        if (isPasswordOverlayShowing && latchedPasswordLockedPkg != null) {
+            val eventPkg = safeEvent.packageName?.toString()?.trim()?.lowercase()
             if (eventPkg != null && isHomeLauncherPackage(eventPkg)) {
                 unlockedCustomAppPackage = null
                 hidePasswordLockOverlay()
@@ -236,7 +282,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             ?: try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
 
         if (!isIgnoredSystemPackage(eventPkg)) {
-            val validPkg = eventPkg!!
+            val validPkg = eventPkg!!.trim().lowercase()
+            lastRawForegroundPackage = validPkg
             lastDetectedPackage = validPkg
 
             // Anti-Cheat: Block Calculator if wake-up alarm is ringing
@@ -248,7 +295,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             }
 
             // If user opened IronDiscipline MainActivity or Home Launcher, clear current target
-            if ((validPkg == packageName && IronDisciplineApp.isMainActivityVisible) || isHomeLauncherPackage(validPkg)) {
+            if ((validPkg == packageName.lowercase() && IronDisciplineApp.isMainActivityVisible) || isHomeLauncherPackage(validPkg)) {
                 currentTargetAppKey = null
                 unlockedCustomAppPackage = null
                 hideFloatingTimerPill()
@@ -263,7 +310,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             }
 
             // If user navigated away from the currently unlocked custom package, re-lock it
-            if (unlockedCustomAppPackage != null && validPkg != unlockedCustomAppPackage) {
+            if (unlockedCustomAppPackage != null && validPkg != unlockedCustomAppPackage && validPkg != packageName.lowercase()) {
                 unlockedCustomAppPackage = null
             }
 
@@ -287,19 +334,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             }
 
             // Priority 2: Custom Master Password Lock Check
-            val isMasterPasswordEnabled = prefs.getBoolean("is_master_password_enabled", false)
-            val customLockedPackages = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
-
-            if (isMasterPasswordEnabled && customLockedPackages.contains(validPkg)) {
-                if (unlockedCustomAppPackage != validPkg) {
-                    hideFloatingTimerPill()
-                    if (isBlockOverlayShowing) {
-                        hideBlockOverlay()
-                    }
-                    showPasswordLockOverlay(validPkg)
-                    stopVideoAndSilenceAudio()
-                    return
-                }
+            checkAndEnforceCustomAppLock(validPkg)
+            if (isPasswordOverlayShowing) {
+                stopVideoAndSilenceAudio()
+                return
             }
 
             // Priority 3: Normal Quota Tracking
@@ -312,7 +350,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 if (isBlockOverlayShowing && latchedLockedAppKey == null) {
                     hideBlockOverlay()
                 }
-                if (isPasswordOverlayShowing && currentlyLockedTargetPkg != validPkg) {
+                if (isPasswordOverlayShowing && latchedPasswordLockedPkg != validPkg) {
                     hidePasswordLockOverlay()
                 }
             }
@@ -326,8 +364,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 for (window in windowList) {
                     if (window != null && window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
                         val rootNode = try { window.root } catch (_: Exception) { null }
-                        val winPkg = rootNode?.packageName?.toString()
-                        if (!isIgnoredSystemPackage(winPkg)) {
+                        val winPkg = rootNode?.packageName?.toString()?.trim()?.lowercase()
+                        if (!winPkg.isNullOrBlank() && !isIgnoredSystemPackage(winPkg)) {
                             return winPkg
                         }
                     }
@@ -336,13 +374,17 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {}
 
         try {
-            val rootPkg = rootInActiveWindow?.packageName?.toString()
-            if (!isIgnoredSystemPackage(rootPkg)) {
+            val rootPkg = rootInActiveWindow?.packageName?.toString()?.trim()?.lowercase()
+            if (!rootPkg.isNullOrBlank() && !isIgnoredSystemPackage(rootPkg)) {
                 return rootPkg
             }
         } catch (_: Exception) {}
 
-        return if (lastDetectedPackage.isNotEmpty() && !isIgnoredSystemPackage(lastDetectedPackage)) lastDetectedPackage else null
+        return if (lastRawForegroundPackage.isNotBlank() && !isIgnoredSystemPackage(lastRawForegroundPackage)) {
+            lastRawForegroundPackage
+        } else if (lastDetectedPackage.isNotBlank() && !isIgnoredSystemPackage(lastDetectedPackage)) {
+            lastDetectedPackage.trim().lowercase()
+        } else null
     }
 
     /**
@@ -611,7 +653,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // CRITICAL LATCH CHECK: If password lock overlay is showing, stay latched and audio muted!
-        if (isPasswordOverlayShowing && currentlyLockedTargetPkg != null) {
+        if (isPasswordOverlayShowing && latchedPasswordLockedPkg != null) {
             stopVideoAndSilenceAudio()
             return
         }
@@ -633,7 +675,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // Grace period check: Wait for Home Launcher transition
-        if (System.currentTimeMillis() < exitToHomeGraceUntilMs) {
+        if (System.currentTimeMillis() < exitToHomeGraceUntilMs || System.currentTimeMillis() < exitCustomLockGraceUntilMs) {
             return
         }
 
@@ -646,7 +688,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // If inside Dashboard or Home Launcher, ensure overlay and pill are hidden
-        if (IronDisciplineApp.isMainActivityVisible || isHomeLauncherPackage(lastDetectedPackage) || (lastDetectedPackage == packageName && IronDisciplineApp.isMainActivityVisible)) {
+        val activeForegroundPkg = detectCurrentForegroundPackage()
+        val currentPackageCheck = activeForegroundPkg ?: lastDetectedPackage.trim().lowercase()
+        if (IronDisciplineApp.isMainActivityVisible || isHomeLauncherPackage(currentPackageCheck) || (currentPackageCheck == packageName.lowercase() && IronDisciplineApp.isMainActivityVisible)) {
             hideFloatingTimerPill()
             unlockedCustomAppPackage = null
             if (isBlockOverlayShowing) {
@@ -660,29 +704,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         // Step A.5 — Check Background Custom Password Locked Applications:
-        val activeForegroundPkg = detectCurrentForegroundPackage()
-        val isMasterPasswordEnabled = prefs.getBoolean("is_master_password_enabled", false)
-        val customLockedPackages = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
-
         if (activeForegroundPkg != null && !isIgnoredSystemPackage(activeForegroundPkg)) {
-            if (unlockedCustomAppPackage != null && activeForegroundPkg != unlockedCustomAppPackage && activeForegroundPkg != packageName) {
+            if (unlockedCustomAppPackage != null && activeForegroundPkg != unlockedCustomAppPackage && activeForegroundPkg != packageName.lowercase()) {
                 unlockedCustomAppPackage = null
             }
 
-            if (isMasterPasswordEnabled && customLockedPackages.contains(activeForegroundPkg)) {
-                val matchedKey = resolveTargetAppKey(activeForegroundPkg)
-                val lockRem = if (matchedKey != null) prefs.getInt(PREFIX_REMAINING_LOCK_SEC + matchedKey, 0) else 0
-
-                // If not currently serving 5-hour penalty and not unlocked in this session
-                if (lockRem <= 0 && unlockedCustomAppPackage != activeForegroundPkg) {
-                    hideFloatingTimerPill()
-                    if (isBlockOverlayShowing) {
-                        hideBlockOverlay()
-                    }
-                    showPasswordLockOverlay(activeForegroundPkg)
-                    stopVideoAndSilenceAudio()
-                    return
-                }
+            checkAndEnforceCustomAppLock(activeForegroundPkg)
+            if (isPasswordOverlayShowing) {
+                stopVideoAndSilenceAudio()
+                return
             }
         }
 
@@ -1242,7 +1272,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         val view = passwordOverlayView ?: return
         passwordOverlayView = null
         isPasswordOverlayShowing = false
-        currentlyLockedTargetPkg = null
+        latchedPasswordLockedPkg = null
 
         restoreAudioCleanly()
 
@@ -1252,7 +1282,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     fun showPasswordLockOverlay(targetPkg: String) {
-        if (isPasswordOverlayShowing && currentlyLockedTargetPkg == targetPkg && passwordOverlayView != null) {
+        val normalizedPkg = targetPkg.trim().lowercase()
+        if (isPasswordOverlayShowing && latchedPasswordLockedPkg == normalizedPkg && passwordOverlayView != null) {
             return
         }
 
@@ -1271,10 +1302,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         val pm = packageManager
         val appName = try {
-            val appInfo = pm.getApplicationInfo(targetPkg, 0)
+            val appInfo = pm.getApplicationInfo(normalizedPkg, 0)
             pm.getApplicationLabel(appInfo).toString()
         } catch (_: Exception) {
-            targetPkg
+            normalizedPkg
         }
 
         try {
@@ -1283,7 +1314,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 passwordOverlayView = null
             }
 
-            val view = buildNativePasswordLockOverlayView(appName, targetPkg)
+            val view = buildNativePasswordLockOverlayView(appName, normalizedPkg)
             val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             } else {
@@ -1295,8 +1326,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 layoutType,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.CENTER
@@ -1307,7 +1337,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 wm.addView(view, params)
                 passwordOverlayView = view
                 isPasswordOverlayShowing = true
-                currentlyLockedTargetPkg = targetPkg
+                latchedPasswordLockedPkg = normalizedPkg
             } catch (_: Exception) {
                 if (Settings.canDrawOverlays(this)) {
                     try {
@@ -1315,7 +1345,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                         wm.addView(view, params)
                         passwordOverlayView = view
                         isPasswordOverlayShowing = true
-                        currentlyLockedTargetPkg = targetPkg
+                        latchedPasswordLockedPkg = normalizedPkg
                     } catch (_: Exception) {}
                 }
             }
@@ -1333,8 +1363,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         val rootFrame = object : FrameLayout(this) {
             override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
                 if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                    exitToHomeGraceUntilMs = System.currentTimeMillis() + 600L
+                    exitCustomLockGraceUntilMs = System.currentTimeMillis() + 700L
                     currentTargetAppKey = null
+                    lastRawForegroundPackage = ""
                     lastDetectedPackage = ""
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     hidePasswordLockOverlay()
@@ -1487,7 +1518,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                     val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                     imm?.hideSoftInputFromWindow(passwordInput.windowToken, 0)
 
-                    unlockedCustomAppPackage = targetPkg
+                    unlockedCustomAppPackage = targetPkg.trim().lowercase()
                     hidePasswordLockOverlay()
                 } else {
                     errorTv.visibility = View.VISIBLE
@@ -1522,8 +1553,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                 imm?.hideSoftInputFromWindow(passwordInput.windowToken, 0)
 
-                exitToHomeGraceUntilMs = System.currentTimeMillis() + 600L
+                exitCustomLockGraceUntilMs = System.currentTimeMillis() + 700L
                 currentTargetAppKey = null
+                lastRawForegroundPackage = ""
                 lastDetectedPackage = ""
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 hidePasswordLockOverlay()
@@ -1656,8 +1688,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun isHomeLauncherPackage(pkgName: String): Boolean {
-        val lower = pkgName.lowercase()
-        return lower.contains("launcher") ||
+        if (pkgName.isBlank()) return false
+        val lower = pkgName.trim().lowercase()
+        if (lower.contains("launcher") ||
             lower.contains("trebuchet") ||
             lower.contains("nexuslauncher") ||
             lower.contains("miui.home") ||
@@ -1665,7 +1698,24 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             lower.contains("oneplus.launcher") ||
             lower.contains("oppo.launcher") ||
             lower.contains("vivo.launcher") ||
-            lower.contains("huawei.android.launcher")
+            lower.contains("huawei.android.launcher") ||
+            lower.contains("transsion.launcher") ||
+            lower.contains("lenovo.launcher") ||
+            lower.contains("motorola.launcher")
+        ) {
+            return true
+        }
+        try {
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+            }
+            val res = packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            val homePkg = res?.activityInfo?.packageName?.trim()?.lowercase()
+            if (homePkg != null && homePkg == lower) {
+                return true
+            }
+        } catch (_: Exception) {}
+        return false
     }
 
     private fun collectVisibleText(node: AccessibilityNodeInfo?, sb: StringBuilder) {

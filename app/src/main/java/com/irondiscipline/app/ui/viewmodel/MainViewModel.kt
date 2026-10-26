@@ -90,7 +90,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Universal Phone App Locker State ---
     private val _customPasswordLockedPackages = MutableStateFlow<Set<String>>(
-        prefs.getStringSet("custom_password_locked_packages", emptySet())?.toSet() ?: emptySet()
+        getCustomLockedPackages(prefs)
     )
     val customPasswordLockedPackages: StateFlow<Set<String>> = _customPasswordLockedPackages.asStateFlow()
 
@@ -119,16 +119,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleCustomPackageLock(packageName: String, shouldLock: Boolean) {
-        val currentSet = prefs.getStringSet("custom_password_locked_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val currentSet = getCustomLockedPackages(prefs).toMutableSet()
+        val normalized = packageName.trim().lowercase()
         if (shouldLock) {
-            currentSet.add(packageName)
+            currentSet.add(normalized)
         } else {
-            currentSet.remove(packageName)
+            currentSet.remove(normalized)
         }
-        prefs.edit()
-            .putStringSet("custom_password_locked_packages", HashSet(currentSet))
-            .commit()
-        _customPasswordLockedPackages.value = currentSet.toSet()
+        saveCustomLockedPackages(context, currentSet)
+        _customPasswordLockedPackages.value = currentSet
     }
 
     suspend fun loadInstalledLauncherApps(): List<AppLockerItem> = withContext(Dispatchers.IO) {
@@ -142,15 +141,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             addCategory(Intent.CATEGORY_HOME)
         }
         val homePackages = pm.queryIntentActivities(homeIntent, 0)
-            .mapNotNull { it.activityInfo?.packageName }
+            .mapNotNull { it.activityInfo?.packageName?.lowercase() }
             .toSet()
 
-        val myPkg = context.packageName
-        val lockedSet = _customPasswordLockedPackages.value
+        val myPkg = context.packageName.lowercase()
+        val lockedSet = getCustomLockedPackages(prefs)
 
         val items = resolveInfos.mapNotNull { info ->
             val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
-            if (pkg == myPkg || pkg == "com.android.systemui" || homePackages.contains(pkg)) {
+            val pkgLower = pkg.trim().lowercase()
+            if (pkgLower == myPkg || pkgLower == "com.android.systemui" || homePackages.contains(pkgLower)) {
                 return@mapNotNull null
             }
             val label = try { info.loadLabel(pm)?.toString() ?: pkg } catch (_: Exception) { pkg }
@@ -160,9 +160,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 packageName = pkg,
                 appName = label,
                 iconBitmap = iconBitmap,
-                isLocked = lockedSet.contains(pkg)
+                isLocked = lockedSet.contains(pkgLower)
             )
-        }.distinctBy { it.packageName }
+        }.distinctBy { it.packageName.trim().lowercase() }
 
         items.sortedWith(
             compareByDescending<AppLockerItem> { it.isLocked }
@@ -594,6 +594,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        fun saveCustomLockedPackages(context: Context, packages: Set<String>) {
+            val normalized = packages.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+            val csv = normalized.joinToString(",")
+            context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet("custom_password_locked_packages", HashSet(normalized))
+                .putString("custom_locked_packages_csv", csv)
+                .commit()
+        }
+
+        fun getCustomLockedPackages(prefs: android.content.SharedPreferences): Set<String> {
+            val csv = prefs.getString("custom_locked_packages_csv", null)
+            if (!csv.isNullOrBlank()) {
+                return csv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+            }
+            val set = prefs.getStringSet("custom_password_locked_packages", emptySet()) ?: emptySet()
+            return set.map { it.trim().lowercase() }.toSet()
+        }
+
         fun executePinVerifiedUninstall(context: android.content.Context) {
             // 1. Authorize uninstallation for 60 seconds (strictly time-bounded)
             com.irondiscipline.app.util.SecurityPinManager.authorizeRemovalSession(context, 60_000L)
