@@ -450,30 +450,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         postBannerMessage("Logged $completedMinutes mins of Deep Work! Discipline grows stronger.")
     }
 
-    // --- PIN Management & Emergency App Deletion ---
-    fun getUninstallPin(): String {
-        val prefs = context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, android.content.Context.MODE_PRIVATE)
-        return prefs.getString("uninstall_pin", "1234") ?: "1234"
-    }
-
+    // --- PIN Management & Authorized App Deletion ---
     fun verifyUninstallPin(enteredPin: String): Boolean {
-        return enteredPin.trim() == getUninstallPin().trim()
+        return when (val result = com.irondiscipline.app.util.SecurityPinManager.verifyPin(context, enteredPin)) {
+            is com.irondiscipline.app.util.PinVerificationResult.Success -> {
+                true
+            }
+            is com.irondiscipline.app.util.PinVerificationResult.LockedOut -> {
+                postBannerMessage("Security Cooldown: Please wait ${result.remainingSeconds}s before retrying.")
+                false
+            }
+            is com.irondiscipline.app.util.PinVerificationResult.Failed -> {
+                if (result.remainingAttempts > 0) {
+                    postBannerMessage("Incorrect PIN. ${result.remainingAttempts} attempts remaining.")
+                } else {
+                    postBannerMessage("Incorrect PIN. Security cooldown activated.")
+                }
+                false
+            }
+        }
     }
 
     fun updateUninstallPin(currentPin: String, newPin: String): Boolean {
-        if (!verifyUninstallPin(currentPin)) {
-            postBannerMessage("Incorrect Current PIN.")
-            return false
-        }
         val cleanNewPin = newPin.trim()
         if (cleanNewPin.length < 4) {
             postBannerMessage("New PIN must be at least 4 digits.")
             return false
         }
-        val prefs = context.getSharedPreferences(AppBlockerAccessibilityService.PREFS_NAME, android.content.Context.MODE_PRIVATE)
-        prefs.edit().putString("uninstall_pin", cleanNewPin).apply()
-        postBannerMessage("Security PIN updated successfully.")
-        return true
+        val success = com.irondiscipline.app.util.SecurityPinManager.updatePin(context, currentPin, cleanNewPin)
+        if (success) {
+            postBannerMessage("Security PIN updated successfully.")
+        } else {
+            postBannerMessage("Failed to update PIN: Current PIN is incorrect.")
+        }
+        return success
     }
 
     fun executeAuthorizedUninstall() {
@@ -482,29 +492,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         fun executePinVerifiedUninstall(context: android.content.Context) {
-            val prefs = context.getSharedPreferences("iron_discipline_prefs", android.content.Context.MODE_PRIVATE)
+            // 1. Authorize uninstallation for 60 seconds (strictly time-bounded)
+            com.irondiscipline.app.util.SecurityPinManager.authorizeRemovalSession(context, 60_000L)
 
-            // 1. Authorize uninstallation for 60 seconds so Accessibility navigation check stands down
-            prefs.edit()
-                .putLong("pin_verified_until_ms", System.currentTimeMillis() + 60_000L)
-                .putBoolean("is_uninstall_authorized", true)
-                .commit()
-
-            // Disarm Accessibility 5-hour overlay if showing
+            // 2. Disarm 5-hour target app locks so overlays do not obstruct the OS uninstaller dialog
             AppBlockerAccessibilityService.disarmAndDisableServiceForUninstall(context)
 
-            // 2. Deactivate Device Admin so Android allows uninstallation
-            try {
-                val dpm = context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-                val adminComponent = android.content.ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
-                if (dpm.isAdminActive(adminComponent)) {
-                    dpm.removeActiveAdmin(adminComponent)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            // 3. If Device Owner, unblock uninstallation via official API
+            if (PermissionHelper.isDeviceOwner(context)) {
+                PermissionHelper.setUninstallBlocked(context, false)
             }
 
-            // 3. Wait 500ms for Android DevicePolicyManagerService to complete admin removal, then launch system uninstaller
+            // 4. Deactivate standard Device Admin so Android OS unblocks uninstallation
+            PermissionHelper.removeDeviceAdmin(context)
+
+            // 5. Wait 300ms for DevicePolicyManagerService to persist state, then launch system uninstaller
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 try {
                     val packageUri = android.net.Uri.parse("package:${context.packageName}")
@@ -513,9 +515,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     context.startActivity(uninstallIntent)
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.e("MainViewModel", "Failed to launch package uninstaller: ${e.message}")
                 }
-            }, 500L)
+            }, 300L)
         }
     }
 }

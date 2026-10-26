@@ -22,13 +22,18 @@ object PermissionHelper {
         context: Context,
         usageTrackerHelper: UsageTrackerHelper
     ): PermissionStatusState {
+        val isAdmin = isDeviceAdminActive(context)
+        val isOwner = isDeviceOwner(context)
+        val isBlocked = if (isOwner) isUninstallBlockedBySystem(context) else false
         return PermissionStatusState(
             hasUsageStatsPermission = usageTrackerHelper.hasUsageStatsPermission(),
             hasOverlayPermission = Settings.canDrawOverlays(context),
             isAccessibilityServiceEnabled = isAccessibilityServiceEnabled(context),
             isBatteryOptimizationExempt = isIgnoringBatteryOptimizations(context),
             hasNotificationPermission = hasNotificationPermission(context),
-            isDeviceAdminActive = isDeviceAdminActive(context)
+            isDeviceAdminActive = isAdmin,
+            isDeviceOwnerActive = isOwner,
+            isUninstallBlocked = isBlocked
         )
     }
 
@@ -156,14 +161,86 @@ object PermissionHelper {
         }
     }
 
+    fun getDeviceAdminComponent(context: Context): ComponentName {
+        return ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
+    }
+
     fun isDeviceAdminActive(context: Context): Boolean {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
-        val adminComponent = ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
-        return dpm?.isAdminActive(adminComponent) == true
+        val adminComponent = getDeviceAdminComponent(context)
+        return try {
+            dpm?.isAdminActive(adminComponent) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isDeviceOwner(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+        return try {
+            dpm?.isDeviceOwnerApp(context.packageName) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isUninstallBlockedBySystem(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+        val adminComponent = getDeviceAdminComponent(context)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                dpm?.isUninstallBlocked(adminComponent, context.packageName) == true
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun setUninstallBlocked(context: Context, blocked: Boolean): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager ?: return false
+        val adminComponent = getDeviceAdminComponent(context)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                if (dpm.isDeviceOwnerApp(context.packageName)) {
+                    dpm.setUninstallBlocked(adminComponent, context.packageName, blocked)
+                    android.util.Log.i("PermissionHelper", "dpm.setUninstallBlocked($blocked) succeeded as Device Owner")
+                    true
+                } else {
+                    android.util.Log.w("PermissionHelper", "setUninstallBlocked called but app is not Device Owner (ordinary Device Admin cannot call this)")
+                    false
+                }
+            } else {
+                false
+            }
+        } catch (e: SecurityException) {
+            android.util.Log.e("PermissionHelper", "SecurityException in setUninstallBlocked: ${e.message}")
+            false
+        } catch (e: Exception) {
+            android.util.Log.e("PermissionHelper", "Exception in setUninstallBlocked: ${e.message}")
+            false
+        }
+    }
+
+    fun removeDeviceAdmin(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager ?: return false
+        val adminComponent = getDeviceAdminComponent(context)
+        return try {
+            if (dpm.isAdminActive(adminComponent)) {
+                dpm.removeActiveAdmin(adminComponent)
+                true
+            } else {
+                true
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("PermissionHelper", "Failed to remove active admin: ${e.message}")
+            false
+        }
     }
 
     fun createEnableDeviceAdminIntent(context: Context): Intent {
-        val adminComponent = ComponentName(context, com.irondiscipline.app.FocusDeviceAdminReceiver::class.java)
+        val adminComponent = getDeviceAdminComponent(context)
         return Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
             putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
             putExtra(

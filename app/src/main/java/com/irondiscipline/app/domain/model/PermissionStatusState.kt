@@ -6,7 +6,9 @@ data class PermissionStatusState(
     val isAccessibilityServiceEnabled: Boolean = false,
     val isBatteryOptimizationExempt: Boolean = false,
     val hasNotificationPermission: Boolean = true,
-    val isDeviceAdminActive: Boolean = false
+    val isDeviceAdminActive: Boolean = false,
+    val isDeviceOwnerActive: Boolean = false,
+    val isUninstallBlocked: Boolean = false
 ) {
     val allCriticalGranted: Boolean
         get() = hasUsageStatsPermission && hasOverlayPermission && isAccessibilityServiceEnabled

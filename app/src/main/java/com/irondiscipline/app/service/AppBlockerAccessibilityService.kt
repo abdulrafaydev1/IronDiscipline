@@ -193,9 +193,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         checkProtectedNavigation(safeEvent)
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // 0. Emergency / Authorized App Uninstall: stand down protection and disable service
-        if (prefs.getBoolean("is_uninstall_authorized", false)) {
-            disarmAndDisable()
+        // 0. Authorized App Uninstall session check
+        if (com.irondiscipline.app.util.SecurityPinManager.isUninstallSessionActive(this)) {
+            hideFloatingTimerPill()
+            hideBlockOverlay()
             return
         }
 
@@ -486,9 +487,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private fun tickOneSecond() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // Emergency / Authorized App Uninstall: stand down protection and disable service
-        if (prefs.getBoolean("is_uninstall_authorized", false)) {
-            disarmAndDisable()
+        // Authorized App Uninstall: stand down overlay and allow unhindered removal
+        if (com.irondiscipline.app.util.SecurityPinManager.isUninstallSessionActive(this)) {
+            hideFloatingTimerPill()
+            hideBlockOverlay()
             return
         }
 
@@ -1166,11 +1168,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun checkProtectedNavigation(event: AccessibilityEvent?) {
-        val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
-
-        // 1. If the user entered the valid 4-digit PIN within the last 60 seconds, allow uninstallation!
-        val pinVerifiedUntil = prefs.getLong("pin_verified_until_ms", 0L)
-        if (System.currentTimeMillis() < pinVerifiedUntil) {
+        // 1. If an authorized uninstall session is active, allow unhindered uninstallation
+        if (com.irondiscipline.app.util.SecurityPinManager.isUninstallSessionActive(this)) {
             hideBlockOverlay()
             return
         }
@@ -1272,13 +1271,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * Disarms anti-tamper protections, resets 5-hour locks for YouTube, Facebook,
-         * Instagram, and TikTok, and shuts down the AccessibilityService so Android's
+         * Disarms 5-hour locks for target apps and cleans up overlays so Android's
          * package uninstaller dialog is completely unobstructed.
          */
         fun disarmAndDisableServiceForUninstall(context: Context) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val editor = prefs.edit().putBoolean("is_uninstall_authorized", true)
+            val editor = prefs.edit()
             val coreKeys = listOf("youtube", "facebook", "instagram", "tiktok")
             for (key in coreKeys) {
                 editor.putInt(PREFIX_REMAINING_LOCK_SEC + key, 0)
@@ -1289,7 +1287,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             val service = instance
             if (service != null) {
                 Handler(Looper.getMainLooper()).post {
-                    service.disarmAndDisable()
+                    service.hideFloatingTimerPill()
+                    service.hideBlockOverlay()
+                    service.restoreAudioCleanly()
                 }
             }
         }
