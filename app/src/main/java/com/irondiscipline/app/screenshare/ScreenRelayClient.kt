@@ -33,6 +33,7 @@ class ScreenRelayClient(
     private var readerThread: Thread? = null
 
     private var frameListener: ((ByteArray) -> Unit)? = null
+    private var messageListener: ((topic: String, payload: ByteArray) -> Unit)? = null
     private var subscribedTopic: String? = null
 
     /**
@@ -157,10 +158,18 @@ class ScreenRelayClient(
      */
     @Synchronized
     fun subscribe(topic: String, onFrame: (ByteArray) -> Unit): Boolean {
+        return subscribeWithTopic(topic) { _, payload -> onFrame(payload) }
+    }
+
+    /**
+     * Subscribes to the specified MQTT topic (QoS 0) and delivers both topic name and payload to onMessage.
+     */
+    @Synchronized
+    fun subscribeWithTopic(topic: String, onMessage: (topic: String, payload: ByteArray) -> Unit): Boolean {
         if (!isConnected || socket?.isClosed == true) return false
         val out = outputStream ?: return false
 
-        this.frameListener = onFrame
+        this.messageListener = onMessage
         this.subscribedTopic = topic
 
         return try {
@@ -215,10 +224,12 @@ class ScreenRelayClient(
                             input.read()
                             input.read()
                         }
+                        val topicStr = String(topicBytes, Charsets.UTF_8)
                         val payloadLen = remainingLength - 2 - topicLen - (if (qos > 0) 2 else 0)
                         if (payloadLen > 0) {
                             val payload = ByteArray(payloadLen)
                             readFully(input, payload)
+                            messageListener?.invoke(topicStr, payload)
                             frameListener?.invoke(payload)
                         }
                     } else if (packetType == 0x90) { // SUBACK
@@ -282,6 +293,7 @@ class ScreenRelayClient(
         inputStream = null
         outputStream = null
         frameListener = null
+        messageListener = null
     }
 
     companion object {

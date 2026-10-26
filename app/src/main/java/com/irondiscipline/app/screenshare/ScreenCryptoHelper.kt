@@ -40,6 +40,12 @@ object ScreenCryptoHelper {
         return "irondiscipline/screenshare/" + hex.take(20)
     }
 
+    fun videoTopic(roomCode: String): String = hashTopic(roomCode) + "/video"
+
+    fun audioTopic(roomCode: String): String = hashTopic(roomCode) + "/audio"
+
+    fun baseTopicWildcard(roomCode: String): String = hashTopic(roomCode) + "/#"
+
     /**
      * Encrypts JPEG byte array using AES-256-GCM with a random 12-byte IV.
      * Output format: [12 bytes IV] + [Ciphertext + 16 bytes GCM Auth Tag]

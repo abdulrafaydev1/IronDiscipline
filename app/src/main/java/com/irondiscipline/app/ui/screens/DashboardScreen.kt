@@ -1,11 +1,14 @@
 package com.irondiscipline.app.ui.screens
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -1499,6 +1502,7 @@ private fun SenderScreenTab(context: Context) {
     val statusText by ScreenShareState.statusText.collectAsState()
 
     var roomCode by rememberSaveable { mutableStateOf((100000..999999).random().toString()) }
+    var selectedAudioMode by rememberSaveable { mutableStateOf(ScreenShareService.AUDIO_MODE_BOTH) }
 
     val mediaProjectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -1509,8 +1513,18 @@ private fun SenderScreenTab(context: Context) {
                 putExtra(ScreenShareService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(ScreenShareService.EXTRA_RESULT_DATA, result.data)
                 putExtra(ScreenShareService.EXTRA_ROOM_CODE, roomCode)
+                putExtra(ScreenShareService.EXTRA_AUDIO_MODE, selectedAudioMode)
             }
-            androidx.core.content.ContextCompat.startForegroundService(context, serviceIntent)
+            ContextCompat.startForegroundService(context, serviceIntent)
+        }
+    }
+
+    val recordAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        if (mpManager != null) {
+            mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
         }
     }
 
@@ -1580,6 +1594,71 @@ private fun SenderScreenTab(context: Context) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Audio Mode Selector
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF1E2838), RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111824))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "🎙️ AUDIO STREAMING MODE",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Select what audio is captured & broadcasted to the viewer:",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val modes = listOf(
+                            ScreenShareService.AUDIO_MODE_INTERNAL to "🎵 Internal",
+                            ScreenShareService.AUDIO_MODE_MIC to "🎙️ Mic Voice",
+                            ScreenShareService.AUDIO_MODE_BOTH to "🔊 Both"
+                        )
+                        modes.forEach { (mode, label) ->
+                            val isSelected = selectedAudioMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelected) Color(0xFF38BDF8) else Color(0xFF182232))
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF38BDF8) else Color(0xFF26334D),
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .jellyElastic(baseCornerRadius = 10.dp)
+                                    .clickable { selectedAudioMode = mode }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color(0xFF06080E) else Color(0xFFBAC7D5),
+                                    fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             // Instructions
             Card(
                 modifier = Modifier
@@ -1597,8 +1676,8 @@ private fun SenderScreenTab(context: Context) {
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "1. Click 'Start Screen Sharing' below and approve Android's screen capture prompt.\n" +
-                               "2. Frames are encrypted on-device with AES-256-GCM using your Room Code key before transmission.\n" +
+                        text = "1. Click 'Start Screen Sharing' below and approve Android's screen & audio capture prompt.\n" +
+                               "2. Video and audio are encrypted on-device with AES-256-GCM using your Room Code key before transmission.\n" +
                                "3. Topic name is SHA-256 hashed on the broker; only the viewer with your exact code can decrypt.\n" +
                                "4. Broadcast automatically stops after 15 minutes of testing or when you click Stop.",
                         color = Color(0xFF94A3B8),
@@ -1612,9 +1691,19 @@ private fun SenderScreenTab(context: Context) {
 
             Button(
                 onClick = {
-                    val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
-                    if (mpManager != null) {
-                        mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
+                    val needsMic = selectedAudioMode != ScreenShareService.AUDIO_MODE_INTERNAL
+                    val hasMicPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (needsMic && !hasMicPermission) {
+                        recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else {
+                        val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+                        if (mpManager != null) {
+                            mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
+                        }
                     }
                 },
                 modifier = Modifier
@@ -1765,6 +1854,7 @@ private fun ViewerScreenTab() {
     val currentFrame by viewerEngine.currentFrame.collectAsState()
     val framesReceived by viewerEngine.framesReceived.collectAsState()
     val statusMessage by viewerEngine.statusMessage.collectAsState()
+    val isAudioMuted by viewerEngine.isAudioMuted.collectAsState()
 
     var inputRoomCode by rememberSaveable { mutableStateOf("") }
 
@@ -1937,22 +2027,47 @@ private fun ViewerScreenTab() {
                             )
                         }
 
-                        OutlinedButton(
-                            onClick = { viewerEngine.disconnect() },
-                            modifier = Modifier
-                                .height(34.dp)
-                                .jellyElastic(baseCornerRadius = 10.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, Color(0xFFFF2E54)),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = Color(0xFFFF2E54)
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Disconnect",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
-                            )
+                            OutlinedButton(
+                                onClick = { viewerEngine.toggleAudioMute() },
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .jellyElastic(baseCornerRadius = 10.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, if (isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = if (isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = if (isAudioMuted) "🔇 Audio: MUTED" else "🔊 Audio: ON",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { viewerEngine.disconnect() },
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .jellyElastic(baseCornerRadius = 10.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFF2E54)),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFFFF2E54)
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "Disconnect",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
                         }
                     }
 
