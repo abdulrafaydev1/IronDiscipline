@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Real-Time Screen Viewer Engine.
- * Subscribes to broker.emqx.io on the target Room Code and decodes incoming JPEG frames to Compose ImageBitmap.
+ * Subscribes to broker.emqx.io on the hashed topic and decrypts AES-256-GCM frames to Compose ImageBitmap.
  */
 class ScreenViewerEngine {
 
@@ -59,19 +59,26 @@ class ScreenViewerEngine {
             relayClient = client
             _isConnected.value = true
             _isConnecting.value = false
-            _statusMessage.value = "Connected to Room #$cleanCode. Waiting for screen frames..."
+            _statusMessage.value = "Connected to Room #$cleanCode. Waiting for encrypted stream..."
 
-            val topic = "irondiscipline/screenshare/$cleanCode"
-            val subscribed = client.subscribe(topic) { frameBytes ->
+            val hashedTopic = ScreenCryptoHelper.hashTopic(cleanCode)
+            val aesKey = ScreenCryptoHelper.deriveKey(cleanCode)
+
+            val subscribed = client.subscribe(hashedTopic) { encryptedBytes ->
                 try {
-                    val bmp = BitmapFactory.decodeByteArray(frameBytes, 0, frameBytes.size)
-                    if (bmp != null) {
-                        _currentFrame.value = bmp.asImageBitmap()
-                        _framesReceived.value += 1
-                        _statusMessage.value = "Live Broadcast Active (Room #$cleanCode)"
+                    val decryptedBytes = ScreenCryptoHelper.decryptFrame(encryptedBytes, aesKey)
+                    if (decryptedBytes != null) {
+                        val bmp = BitmapFactory.decodeByteArray(decryptedBytes, 0, decryptedBytes.size)
+                        if (bmp != null) {
+                            _currentFrame.value = bmp.asImageBitmap()
+                            _framesReceived.value += 1
+                            _statusMessage.value = "🔒 E2EE Live Broadcast (Room #$cleanCode)"
+                        }
+                    } else {
+                        Log.w("ScreenViewerEngine", "Decryption failed (MAC verification mismatch or bad key)")
                     }
                 } catch (e: Exception) {
-                    Log.e("ScreenViewerEngine", "Error decoding frame: ${e.message}")
+                    Log.e("ScreenViewerEngine", "Error handling frame: ${e.message}")
                 }
             }
 

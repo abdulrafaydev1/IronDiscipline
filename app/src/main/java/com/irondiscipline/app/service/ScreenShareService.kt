@@ -24,11 +24,13 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.irondiscipline.app.MainActivity
 import com.irondiscipline.app.R
+import com.irondiscipline.app.screenshare.ScreenCryptoHelper
 import com.irondiscipline.app.screenshare.ScreenRelayClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Foreground Service for Real-Time MediaProjection Screen Capture and Frame Broadcasting.
@@ -44,12 +46,24 @@ class ScreenShareService : Service() {
 
     private var relayClient: ScreenRelayClient? = null
     private var currentRoomCode: String = ""
+    private var hashedTopic: String = ""
+    private var aesKey: SecretKeySpec? = null
+    private var sessionStartTimeMs: Long = 0L
+
     private var isStreamingActive = false
     private val isCapturingFrame = AtomicBoolean(false)
 
     private val captureRunnable = object : Runnable {
         override fun run() {
             if (!isStreamingActive) return
+
+            // Auto-stop after 15 minutes of testing
+            if (System.currentTimeMillis() - sessionStartTimeMs > MAX_SHARE_DURATION_MS) {
+                Log.i("ScreenShareService", "15-minute screen share session expired. Auto-stopping.")
+                stopScreenCaptureService()
+                return
+            }
+
             captureAndPublishFrame()
             backgroundHandler?.postDelayed(this, 220L) // ~4.5 FPS low-latency stream
         }
@@ -87,6 +101,10 @@ class ScreenShareService : Service() {
             }
 
             this.currentRoomCode = roomCode
+            this.hashedTopic = ScreenCryptoHelper.hashTopic(roomCode)
+            this.aesKey = ScreenCryptoHelper.deriveKey(roomCode)
+            this.sessionStartTimeMs = System.currentTimeMillis()
+
             startForegroundWithNotification(roomCode)
             startScreenCapture(resultCode, resultData, roomCode)
         }
@@ -108,7 +126,7 @@ class ScreenShareService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("IronDiscipline Live Screen Share")
-            .setContentText("Broadcasting live screen • Room Code: #$roomCode")
+            .setContentText("🔒 E2EE Active (AES-256-GCM) • Room: #$roomCode")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -232,8 +250,13 @@ class ScreenShareService : Service() {
                 frameBitmap.compress(Bitmap.CompressFormat.JPEG, 45, baos)
                 val jpegBytes = baos.toByteArray()
 
-                client.publish("irondiscipline/screenshare/$currentRoomCode", jpegBytes)
-                ScreenShareState.incrementFrames()
+                // AES-256-GCM End-to-End Encryption
+                val key = aesKey
+                if (key != null && hashedTopic.isNotEmpty()) {
+                    val encryptedPayload = ScreenCryptoHelper.encryptFrame(jpegBytes, key)
+                    client.publish(hashedTopic, encryptedPayload)
+                    ScreenShareState.incrementFrames()
+                }
 
                 if (frameBitmap !== fullBitmap) {
                     frameBitmap.recycle()
@@ -309,6 +332,7 @@ class ScreenShareService : Service() {
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
         const val EXTRA_ROOM_CODE = "extra_room_code"
+        const val MAX_SHARE_DURATION_MS = 15 * 60 * 1000L // 15-minute safety timeout
 
         fun stopSharing(context: Context) {
             val intent = Intent(context, ScreenShareService::class.java).apply {

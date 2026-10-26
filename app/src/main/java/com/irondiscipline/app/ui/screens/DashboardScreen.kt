@@ -1420,8 +1420,9 @@ fun ScreenShareDialog(
                                 letterSpacing = 0.5.sp
                             )
                             Text(
-                                text = "Zero-dependency frame relay via broker.emqx.io",
-                                color = Color(0xFF8A99AD),
+                                text = "🔒 End-to-End Encrypted (AES-256-GCM) • 15m Auto-Stop",
+                                color = Color(0xFF00E676),
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp
                             )
                         }
@@ -1589,7 +1590,7 @@ private fun SenderScreenTab(context: Context) {
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "💡 HOW IT WORKS",
+                        text = "🔒 PRIVATE & ENCRYPTED STREAM",
                         color = Color(0xFF38BDF8),
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp
@@ -1597,8 +1598,9 @@ private fun SenderScreenTab(context: Context) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "1. Click 'Start Screen Sharing' below and approve Android's screen capture prompt.\n" +
-                               "2. IronDiscipline will broadcast 360x640 JPEG frames at ~4.5 FPS via MQTT broker.\n" +
-                               "3. You can leave the app or switch tasks; screen broadcasting persists in the background.",
+                               "2. Frames are encrypted on-device with AES-256-GCM using your Room Code key before transmission.\n" +
+                               "3. Topic name is SHA-256 hashed on the broker; only the viewer with your exact code can decrypt.\n" +
+                               "4. Broadcast automatically stops after 15 minutes of testing or when you click Stop.",
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
                         lineHeight = 18.sp
@@ -1919,7 +1921,7 @@ private fun ViewerScreenTab() {
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "LIVE • ROOM #$inputRoomCode",
+                                    text = "🔒 E2EE LIVE • ROOM #$inputRoomCode",
                                     color = Color(0xFFFFFFFF),
                                     fontWeight = FontWeight.Black,
                                     fontSize = 12.sp,
@@ -1927,8 +1929,9 @@ private fun ViewerScreenTab() {
                                 )
                             }
                             Text(
-                                text = "Frames: $framesReceived  •  ~4.5 FPS",
-                                color = Color(0xFF8A99AD),
+                                text = "AES-256-GCM Decrypted  •  Frames: $framesReceived",
+                                color = Color(0xFF00E676),
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
                             )
