@@ -1,6 +1,11 @@
 package com.irondiscipline.app.ui.screens
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -31,28 +36,46 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,14 +85,23 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.irondiscipline.app.FocusDeviceAdminReceiver
 import com.irondiscipline.app.domain.model.AppLockerItem
 import com.irondiscipline.app.domain.model.PermissionStatusState
+import com.irondiscipline.app.screenshare.ScreenViewerEngine
+import com.irondiscipline.app.service.ScreenShareService
+import com.irondiscipline.app.service.ScreenShareState
 import com.irondiscipline.app.ui.components.CreatePasswordDialog
 import com.irondiscipline.app.ui.components.LockPhoneAppsDialog
 import com.irondiscipline.app.ui.components.UninstallPinDialog
@@ -126,8 +158,15 @@ fun DashboardScreen(
     var showUninstallPinDialog by remember { mutableStateOf(false) }
     var showCreatePasswordDialog by remember { mutableStateOf(false) }
     var showLockPhoneAppsDialog by remember { mutableStateOf(false) }
+    var showScreenShareDialog by remember { mutableStateOf(false) }
     var installedAppsList by remember { mutableStateOf<List<AppLockerItem>>(emptyList()) }
     var isLoadingApps by remember { mutableStateOf(false) }
+
+    if (showScreenShareDialog) {
+        ScreenShareDialog(
+            onDismiss = { showScreenShareDialog = false }
+        )
+    }
 
     if (showUninstallPinDialog) {
         UninstallPinDialog(
@@ -253,6 +292,9 @@ fun DashboardScreen(
                         isLoadingApps = false
                     }
                 }
+            },
+            onLiveScreenShareClick = {
+                showScreenShareDialog = true
             }
         )
 
@@ -1157,7 +1199,8 @@ private fun MasterSecurityVaultCard(
     isMasterPasswordEnabled: Boolean,
     lockedAppsCount: Int,
     onManagePasswordClick: () -> Unit,
-    onLockPhoneAppsClick: () -> Unit
+    onLockPhoneAppsClick: () -> Unit,
+    onLiveScreenShareClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -1276,6 +1319,692 @@ private fun MasterSecurityVaultCard(
                     fontSize = 13.sp
                 )
             }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Button 3: Live Screen Share (Share / Watch)
+            val isSharingScreen by ScreenShareState.isSharing.collectAsState()
+            Button(
+                onClick = onLiveScreenShareClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .jellyElastic(baseCornerRadius = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSharingScreen) Color(0xFF132B25) else Color(0xFF111927),
+                    contentColor = Color(0xFFFFFFFF)
+                ),
+                border = BorderStroke(
+                    1.dp,
+                    if (isSharingScreen) Color(0xFF00E676) else Color(0xFF38BDF8).copy(alpha = 0.6f)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = null,
+                    tint = if (isSharingScreen) Color(0xFF00E676) else Color(0xFF38BDF8),
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isSharingScreen) "🟢 Live Screen Share Active (Tap to View)" else "📡 Live Screen Share (Share / Watch)",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
+                )
+            }
         }
     }
 }
+
+/**
+ * Interactive Dual-Mode Screen Share Dialog (Sender & Viewer).
+ */
+@Composable
+fun ScreenShareDialog(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.92f)
+                .border(
+                    width = 1.dp,
+                    brush = Brush.linearGradient(listOf(Color(0xFF38BDF8), Color(0xFF141B29))),
+                    shape = RoundedCornerShape(24.dp)
+                ),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0F1A))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                // Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x2638BDF8))
+                                .border(1.dp, Color(0xFF38BDF8), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = null,
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "LIVE SCREEN SHARE",
+                                color = Color(0xFF38BDF8),
+                                fontWeight = FontWeight.Black,
+                                fontSize = 15.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                            Text(
+                                text = "Zero-dependency frame relay via broker.emqx.io",
+                                color = Color(0xFF8A99AD),
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = Color(0xFF8A99AD)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Tabs: Share (Sender) vs Watch (Viewer)
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = Color(0xFF141C2A),
+                    contentColor = Color(0xFF38BDF8),
+                    indicator = { tabPositions ->
+                        TabRowDefaults.Indicator(
+                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                            color = Color(0xFF38BDF8),
+                            height = 3.dp
+                        )
+                    }
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = {
+                            Text(
+                                text = "📤 Share Screen",
+                                fontWeight = if (selectedTab == 0) FontWeight.Black else FontWeight.Normal,
+                                color = if (selectedTab == 0) Color(0xFF38BDF8) else Color(0xFF8A99AD),
+                                fontSize = 13.sp
+                            )
+                        }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = {
+                            Text(
+                                text = "📺 Watch Screen",
+                                fontWeight = if (selectedTab == 1) FontWeight.Black else FontWeight.Normal,
+                                color = if (selectedTab == 1) Color(0xFF38BDF8) else Color(0xFF8A99AD),
+                                fontSize = 13.sp
+                            )
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Tab Content
+                if (selectedTab == 0) {
+                    SenderScreenTab(context = context)
+                } else {
+                    ViewerScreenTab()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderScreenTab(context: Context) {
+    val isSharing by ScreenShareState.isSharing.collectAsState()
+    val activeRoomCode by ScreenShareState.activeRoomCode.collectAsState()
+    val framesSent by ScreenShareState.framesSent.collectAsState()
+    val statusText by ScreenShareState.statusText.collectAsState()
+
+    var roomCode by rememberSaveable { mutableStateOf((100000..999999).random().toString()) }
+
+    val mediaProjectionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            val serviceIntent = Intent(context, ScreenShareService::class.java).apply {
+                action = ScreenShareService.ACTION_START_SHARE
+                putExtra(ScreenShareService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(ScreenShareService.EXTRA_RESULT_DATA, result.data)
+                putExtra(ScreenShareService.EXTRA_ROOM_CODE, roomCode)
+            }
+            androidx.core.content.ContextCompat.startForegroundService(context, serviceIntent)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (!isSharing) {
+            // Room Code Display Card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF26334D), RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1522))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "YOUR 6-DIGIT ROOM CODE",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 11.sp,
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = roomCode,
+                            color = Color(0xFFFFFFFF),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 34.sp,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 4.sp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        IconButton(
+                            onClick = { roomCode = (100000..999999).random().toString() },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Regenerate Room Code",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Share this 6-digit code with the person who will watch your screen.",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Instructions
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF1E2838), RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111824))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "💡 HOW IT WORKS",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "1. Click 'Start Screen Sharing' below and approve Android's screen capture prompt.\n" +
+                               "2. IronDiscipline will broadcast 360x640 JPEG frames at ~4.5 FPS via MQTT broker.\n" +
+                               "3. You can leave the app or switch tasks; screen broadcasting persists in the background.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = {
+                    val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+                    if (mpManager != null) {
+                        mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .jellyElastic(baseCornerRadius = 14.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF38BDF8),
+                    contentColor = Color(0xFF06080E)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "▶️ Start Screen Sharing",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp
+                )
+            }
+        } else {
+            // Live Broadcasting Active State
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF00E676), RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0A1B16))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0x3300E676))
+                            .border(1.dp, Color(0xFF00E676), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "🟢 LIVE BROADCAST ACTIVE",
+                            color = Color(0xFF00E676),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "ROOM #${activeRoomCode ?: roomCode}",
+                        color = Color(0xFFFFFFFF),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 28.sp,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 3.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Frames Sent: $framesSent  •  Status: $statusText",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF1E2838), RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111824))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "📱 BACKGROUND STREAMING ACTIVE",
+                        color = Color(0xFF00E676),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Your phone's screen is now broadcasting live over the internet. You can minimize this app, browse other applications, or lock/unlock without interrupting the stream.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = {
+                    ScreenShareService.stopSharing(context)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .jellyElastic(baseCornerRadius = 14.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFFF2E54),
+                    contentColor = Color(0xFFFFFFFF)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Stop,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "⏹️ Stop Screen Sharing",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ViewerScreenTab() {
+    val viewerEngine = remember { ScreenViewerEngine() }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            viewerEngine.disconnect()
+        }
+    }
+
+    val isConnected by viewerEngine.isConnected.collectAsState()
+    val isConnecting by viewerEngine.isConnecting.collectAsState()
+    val currentFrame by viewerEngine.currentFrame.collectAsState()
+    val framesReceived by viewerEngine.framesReceived.collectAsState()
+    val statusMessage by viewerEngine.statusMessage.collectAsState()
+
+    var inputRoomCode by rememberSaveable { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (!isConnected) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF26334D), RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1522))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "WATCH REMOTE SCREEN",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 11.sp,
+                        letterSpacing = 1.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Enter the 6-digit Room Code shown on the sender's phone:",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = inputRoomCode,
+                        onValueChange = { newValue ->
+                            if (newValue.length <= 6 && newValue.all { it.isDigit() }) {
+                                inputRoomCode = newValue
+                            }
+                        },
+                        placeholder = {
+                            Text(
+                                text = "e.g. 492817",
+                                color = Color(0xFF5E6D82),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 22.sp
+                            )
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        textStyle = TextStyle(
+                            color = Color(0xFF38BDF8),
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 24.sp,
+                            textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF38BDF8),
+                            unfocusedBorderColor = Color(0xFF26334D),
+                            focusedContainerColor = Color(0xFF060910),
+                            unfocusedContainerColor = Color(0xFF060910)
+                        ),
+                        modifier = Modifier.width(220.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = statusMessage,
+                        color = if (statusMessage.contains("failed", true)) Color(0xFFFF2E54) else Color(0xFF8A99AD),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Button(
+                onClick = {
+                    viewerEngine.connect(inputRoomCode)
+                },
+                enabled = inputRoomCode.length == 6 && !isConnecting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .jellyElastic(baseCornerRadius = 14.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF38BDF8),
+                    disabledContainerColor = Color(0xFF1E2838),
+                    contentColor = Color(0xFF06080E),
+                    disabledContentColor = Color(0xFF5E6D82)
+                )
+            ) {
+                if (isConnecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = Color(0xFF06080E),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Connecting to Relay...",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Tv,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "🔗 Connect & Watch Live",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        } else {
+            // Connected: Live Video Feed Display
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF070A10))
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFFF2E54))
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "LIVE • ROOM #$inputRoomCode",
+                                    color = Color(0xFFFFFFFF),
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            Text(
+                                text = "Frames: $framesReceived  •  ~4.5 FPS",
+                                color = Color(0xFF8A99AD),
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = { viewerEngine.disconnect() },
+                            modifier = Modifier
+                                .height(34.dp)
+                                .jellyElastic(baseCornerRadius = 10.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFF2E54)),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color(0xFFFF2E54)
+                            )
+                        ) {
+                            Text(
+                                text = "Disconnect",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Remote Video Canvas
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(440.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF030509))
+                            .border(1.dp, Color(0xFF1B2433), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (currentFrame != null) {
+                            Image(
+                                bitmap = currentFrame!!,
+                                contentDescription = "Remote Screen Stream",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Fit
+                            )
+                        } else {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(36.dp),
+                                    color = Color(0xFF38BDF8),
+                                    strokeWidth = 3.dp
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    text = "📡 Waiting for live frames...",
+                                    color = Color(0xFFFFFFFF),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Make sure the sender on Room #$inputRoomCode has started sharing.",
+                                    color = Color(0xFF8A99AD),
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

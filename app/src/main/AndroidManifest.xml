@@ -13,11 +13,15 @@
     <!-- System Overlay for full-screen un-dismissible Motivational Block View -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- Internet access for live screen share socket relay -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Foreground Service to ensure 24/7 persistence of the monitoring engine -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Exact Alarm scheduling and wake locks for Iron Discipline Hard Alarms -->
@@ -161,6 +165,13 @@
             android:lockTaskMode="if_whitelisted"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|navigation"
             android:theme="@style/Theme.IronDiscipline" />
+
+        <!-- Live Screen Share MediaProjection Foreground Service -->
+        <service
+            android:name=".service.ScreenShareService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
     </application>
 
