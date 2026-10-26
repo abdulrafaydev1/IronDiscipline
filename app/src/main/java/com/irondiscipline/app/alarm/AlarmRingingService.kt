@@ -68,6 +68,7 @@ class AlarmRingingService : Service() {
     }
 
     companion object {
+        const val TAG = "IronAlarmTrace"
         const val CHANNEL_ID = "iron_alarm_lockscreen_channel_v2"
         const val NOTIFICATION_ID = 2026
 
@@ -82,7 +83,7 @@ class AlarmRingingService : Service() {
 
         fun stopAndCleanup(context: Context, alarmId: String? = null) {
             val targetAlarmId = alarmId ?: currentRingingAlarmId
-            Log.d("AlarmDiag", "[DISMISS_CLEANUP] stopAndCleanup invoked for alarmId=$targetAlarmId")
+            Log.i(TAG, "[IronAlarmTrace:STAGE7_DISMISS] stopAndCleanup invoked for alarmId=$targetAlarmId, previousRingingId=$currentRingingAlarmId")
 
             isCurrentlyRinging = false
             currentRingingAlarmId = null
@@ -101,7 +102,7 @@ class AlarmRingingService : Service() {
                     val repository = AlarmRepository.getInstance(context)
                     repository.handleAlarmDismissed(targetAlarmId)
                 } catch (e: Exception) {
-                    Log.e("AlarmDiag", "[DISMISS_CLEANUP] Error in repository handleAlarmDismissed: ${e.message}")
+                    Log.e(TAG, "[IronAlarmTrace:STAGE7_DISMISS_ERROR] Error in repository handleAlarmDismissed: ${e.message}")
                 }
             }
 
@@ -127,8 +128,9 @@ class AlarmRingingService : Service() {
             }
             try {
                 context.startActivity(intent)
+                Log.d(TAG, "[IronAlarmTrace:STAGE6_ACTIVITY] bringAlarmScreenToFront dispatched successfully")
             } catch (e: Exception) {
-                Log.e("AlarmDiag", "[SERVICE_START] Exception launching AlarmRingingActivity: ${e.message}")
+                Log.e(TAG, "[IronAlarmTrace:STAGE6_ACTIVITY_ERROR] Exception launching AlarmRingingActivity: ${e.message}")
             }
         }
     }
@@ -178,34 +180,28 @@ class AlarmRingingService : Service() {
 
         // Step B: Promote to foreground (< 50ms)
         val notification = buildRingingNotification(alarmId, alarm)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 ServiceCompat.startForeground(
                     this,
                     NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 )
+                Log.i(TAG, "[IronAlarmTrace:STAGE4_FGS_START] ServiceCompat.startForeground with mediaPlayback SUCCESS for Alarm ID=$alarmId")
             } catch (e: Exception) {
-                Log.e("AlarmDiag", "[SERVICE_START] systemExempted startForeground failed: ${e.message}, falling back")
+                Log.w(TAG, "[IronAlarmTrace:STAGE4_FGS_WARN] mediaPlayback startForeground failed: ${e.message}, falling back to specialUse")
                 try {
                     ServiceCompat.startForeground(
                         this,
                         NOTIFICATION_ID,
                         notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                     )
                 } catch (_: Exception) {
                     startForeground(NOTIFICATION_ID, notification)
                 }
             }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -226,8 +222,8 @@ class AlarmRingingService : Service() {
         val isInteractive = powerManager?.isInteractive ?: false
         val canFullScreen = PermissionHelper.canUseFullScreenIntent(this)
         Log.d(
-            "AlarmDiag",
-            "[SERVICE_START] startForeground success, canUseFullScreenIntent=$canFullScreen, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
+            TAG,
+            "[IronAlarmTrace:FGS_METRICS] canUseFullScreenIntent=$canFullScreen, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
         )
 
         // Step C: START AUDIO & VIBRATION IMMEDIATELY (Decoupled from Activity lifecycle)
@@ -247,7 +243,7 @@ class AlarmRingingService : Service() {
             try {
                 am?.requestAudioFocus(focusRequest)
             } catch (e: Exception) {
-                Log.w("AlarmDiag", "[AUDIO_START] Audio focus request error: ${e.message}")
+                Log.w(TAG, "[IronAlarmTrace:AUDIO_WARN] Audio focus request error: ${e.message}")
             }
         } else {
             @Suppress("DEPRECATION")
@@ -291,11 +287,15 @@ class AlarmRingingService : Service() {
         try { vibrator?.cancel() } catch (_: Exception) {}
         startHeavyVibration()
 
+        val receiverTriggerMs = intent?.getLongExtra(AlarmReceiver.EXTRA_RECEIVER_TRIGGER_MS, 0L) ?: 0L
+        val audioStartNow = System.currentTimeMillis()
+        val triggerToAudioDelayMs = if (receiverTriggerMs > 0L) audioStartNow - receiverTriggerMs else -1L
+
         val currentVol = am?.getStreamVolume(AudioManager.STREAM_ALARM) ?: -1
         val maxVol = am?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: -1
         Log.i(
-            "AlarmDiag",
-            "[AUDIO_START] AudioTrack playing soundIndex=$soundIndex, STREAM_ALARM volume=$currentVol/$maxVol, Vibrator active=true, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
+            TAG,
+            "[IronAlarmTrace:STAGE5_AUDIO_START] AudioTrack.play() active for Alarm ID=$alarmId, soundIndex=$soundIndex, STREAM_ALARM vol=$currentVol/$maxVol, latencyFromReceiver=${triggerToAudioDelayMs}ms, Vibrator active=true, isKeyguardLocked=$isKeyguardLocked, isInteractive=$isInteractive"
         )
 
         // Step D: THEN bring AlarmRingingActivity to front

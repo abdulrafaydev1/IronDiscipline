@@ -19,6 +19,7 @@ class AlarmScheduler(private val context: Context) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
 
     companion object {
+        const val TAG = "IronAlarmTrace"
         const val ACTION_TRIGGER_ALARM = "com.irondiscipline.app.ACTION_ALARM_TRIGGER"
         const val ACTION_SNOOZE_ALARM = "com.irondiscipline.app.alarm.SNOOZE_ALARM"
         const val ACTION_DISMISS_ALARM = "com.irondiscipline.app.alarm.DISMISS_ALARM"
@@ -36,21 +37,28 @@ class AlarmScheduler(private val context: Context) {
                 instance ?: AlarmScheduler(context.applicationContext).also { instance = it }
             }
         }
+
+        /**
+         * Generates a stable, non-negative 31-bit request code derived strictly from the alarm UUID.
+         * Guarantees that different alarms NEVER collide or overwrite each other in Android's PendingIntent table.
+         */
+        fun getRequestCode(alarmId: String): Int {
+            return alarmId.hashCode() and 0x7FFFFFFF
+        }
     }
 
     /**
-     * Schedules an alarm with setAlarmClock to wake the device out of Doze mode.
+     * Constructs a unique, non-colliding trigger Intent for AlarmReceiver.
+     * Combines explicit Action, unique Data URI, and Android Q+ Identifier so that
+     * Intent.filterEquals() treats every alarm as an entirely distinct system identity.
      */
-    fun scheduleAlarm(alarm: AlarmItem) {
-        if (!alarm.isEnabled) {
-            cancelAlarm(alarm.id)
-            return
-        }
-
-        val am = alarmManager ?: return
-        val nextTriggerMs = calculateNextTriggerEpochMs(alarm)
-
-        val triggerIntent = Intent(context, AlarmReceiver::class.java).apply {
+    fun createTriggerIntent(alarm: AlarmItem): Intent {
+        return Intent(context, AlarmReceiver::class.java).apply {
+            action = ACTION_TRIGGER_ALARM
+            data = Uri.parse("irondiscipline://alarm/${alarm.id}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                identifier = alarm.id
+            }
             putExtra(EXTRA_ALARM_ID, alarm.id)
             putExtra("EXTRA_ALARM_ID", alarm.id)
             putExtra(EXTRA_ALARM_LABEL, alarm.label)
@@ -62,18 +70,52 @@ class AlarmScheduler(private val context: Context) {
             putExtra("EXTRA_IS_NEW_TRIGGER", true)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
+    }
+
+    /**
+     * Constructs the companion show Intent displayed in the lock-screen Alarm Clock widget.
+     */
+    fun createShowIntent(alarmId: String): Intent {
+        return Intent(context, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            data = Uri.parse("irondiscipline://show/$alarmId")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                identifier = alarmId
+            }
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+    }
+
+    /**
+     * Schedules an alarm with setAlarmClock to wake the device out of Doze mode.
+     */
+    fun scheduleAlarm(alarm: AlarmItem) {
+        if (!alarm.isEnabled) {
+            cancelAlarm(alarm.id)
+            return
+        }
+
+        val am = alarmManager ?: run {
+            Log.e(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_ERROR] AlarmManager service is null, cannot schedule alarm ID=${alarm.id}")
+            return
+        }
+
+        val nextTriggerMs = calculateNextTriggerEpochMs(alarm)
+        val requestCode = getRequestCode(alarm.id)
+        val triggerIntent = createTriggerIntent(alarm)
 
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            alarm.id.hashCode(),
+            requestCode,
             triggerIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val showIntent = Intent(context, MainActivity::class.java)
+        val showIntent = createShowIntent(alarm.id)
         val showPendingIntent = PendingIntent.getActivity(
             context,
-            alarm.id.hashCode(),
+            requestCode,
             showIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -84,16 +126,17 @@ class AlarmScheduler(private val context: Context) {
             true
         }
         val deltaMs = nextTriggerMs - System.currentTimeMillis()
-        Log.d(
-            "AlarmDiag",
-            "[SCHEDULE] Alarm ID=${alarm.id}, target=${alarm.formattedTime}, triggerAtMillis=$nextTriggerMs, deltaMs=$deltaMs, canScheduleExactAlarms=$canExact"
+        Log.i(
+            TAG,
+            "[IronAlarmTrace:STAGE2_SCHEDULE] SUCCESS -> Alarm ID=${alarm.id}, target=${alarm.formattedTime}, triggerEpoch=$nextTriggerMs, inDelta=${deltaMs}ms, canExact=$canExact, requestCode=$requestCode, data=${triggerIntent.data}"
         )
 
         try {
             val clockInfo = AlarmManager.AlarmClockInfo(nextTriggerMs, showPendingIntent)
             am.setAlarmClock(clockInfo, pendingIntent)
-        } catch (_: SecurityException) {
-            // Fallback for older or restricted exact alarm environments
+            Log.i(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_CONFIRMED] am.setAlarmClock() registered for Alarm ID=${alarm.id}")
+        } catch (se: SecurityException) {
+            Log.w(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_FALLBACK] SecurityException in setAlarmClock: ${se.message}, attempting setExactAndAllowWhileIdle")
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
@@ -101,7 +144,18 @@ class AlarmScheduler(private val context: Context) {
                     am.setExact(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
                 }
             } catch (e: Exception) {
-                Log.e("AlarmDiag", "[SCHEDULE] Failed to schedule exact alarm fallback: ${e.message}")
+                Log.e(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_FATAL] Fallback exact scheduling failed: ${e.message}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_ERROR] Exception in setAlarmClock: ${e.message}, trying setExactAndAllowWhileIdle")
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
+                } else {
+                    am.setExact(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
+                }
+            } catch (ex: Exception) {
+                Log.e(TAG, "[IronAlarmTrace:STAGE2_SCHEDULE_FATAL] Generic fallback failed: ${ex.message}")
             }
         }
 
@@ -114,25 +168,46 @@ class AlarmScheduler(private val context: Context) {
      */
     fun cancelAlarm(alarmId: String) {
         val am = alarmManager ?: return
-        val intent = Intent(context, AlarmReceiver::class.java).apply {
+        val requestCode = getRequestCode(alarmId)
+
+        val triggerIntent = Intent(context, AlarmReceiver::class.java).apply {
+            action = ACTION_TRIGGER_ALARM
+            data = Uri.parse("irondiscipline://alarm/$alarmId")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                identifier = alarmId
+            }
             putExtra(EXTRA_ALARM_ID, alarmId)
             putExtra("EXTRA_ALARM_ID", alarmId)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            alarmId.hashCode(),
-            intent,
+            requestCode,
+            triggerIntent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
         if (pendingIntent != null) {
             am.cancel(pendingIntent)
             pendingIntent.cancel()
+            Log.i(TAG, "[IronAlarmTrace:CANCEL] Broadcast PendingIntent cancelled for Alarm ID=$alarmId, requestCode=$requestCode")
+        }
+
+        val showIntent = createShowIntent(alarmId)
+        val showPendingIntent = PendingIntent.getActivity(
+            context,
+            requestCode,
+            showIntent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (showPendingIntent != null) {
+            am.cancel(showPendingIntent)
+            showPendingIntent.cancel()
         }
 
         // Update CPU partial wakelock state
         try {
             val hasEnabled = AlarmRepository.getInstance(context).alarmsFlow.value.any { it.isEnabled && it.id != alarmId }
             AlarmWakeLockManager.maintainPendingAlarmCpuLock(context, hasEnabled)
+            Log.d(TAG, "[IronAlarmTrace:CANCEL_SYNC] Post-cancel hasEnabledAlarms=$hasEnabled")
         } catch (_: Exception) {}
     }
 
@@ -142,8 +217,14 @@ class AlarmScheduler(private val context: Context) {
     fun scheduleSnooze(alarm: AlarmItem, snoozeMinutes: Int) {
         val am = alarmManager ?: return
         val triggerMs = System.currentTimeMillis() + (snoozeMinutes * 60 * 1000L)
+        val requestCode = getRequestCode(alarm.id)
 
         val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = ACTION_TRIGGER_ALARM
+            data = Uri.parse("irondiscipline://snooze/${alarm.id}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                identifier = alarm.id
+            }
             putExtra(EXTRA_ALARM_ID, alarm.id)
             putExtra("EXTRA_ALARM_ID", alarm.id)
             putExtra(EXTRA_ALARM_LABEL, alarm.label)
@@ -158,15 +239,15 @@ class AlarmScheduler(private val context: Context) {
 
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            alarm.id.hashCode(),
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val showIntent = Intent(context, MainActivity::class.java)
+        val showIntent = createShowIntent(alarm.id)
         val showPendingIntent = PendingIntent.getActivity(
             context,
-            alarm.id.hashCode(),
+            requestCode,
             showIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

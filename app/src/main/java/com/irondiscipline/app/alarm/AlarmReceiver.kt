@@ -13,9 +13,15 @@ import androidx.core.content.ContextCompat
  */
 class AlarmReceiver : BroadcastReceiver() {
 
+    companion object {
+        const val TAG = "IronAlarmTrace"
+        const val EXTRA_RECEIVER_TRIGGER_MS = "extra_receiver_trigger_ms"
+    }
+
     override fun onReceive(context: Context, intent: Intent?) {
         val safeIntent = intent ?: return
         val action = safeIntent.action
+        val now = System.currentTimeMillis()
 
         // 1. Boot recovery and system time/timezone/permission change events
         if (action == Intent.ACTION_BOOT_COMPLETED ||
@@ -25,11 +31,11 @@ class AlarmReceiver : BroadcastReceiver() {
             action == Intent.ACTION_TIMEZONE_CHANGED ||
             action == "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
         ) {
-            Log.i("AlarmDiag", "[RECEIVER] System event received: action=$action -> rescheduling all active alarms")
+            Log.i(TAG, "[IronAlarmTrace:SYSTEM_EVENT] Received action=$action -> rescheduling all active alarms")
             try {
                 AlarmRepository.getInstance(context).rescheduleAllActiveAlarms()
             } catch (e: Exception) {
-                Log.e("AlarmDiag", "[RECEIVER] Error rescheduling active alarms: ${e.message}")
+                Log.e(TAG, "[IronAlarmTrace:SYSTEM_EVENT_ERROR] Error rescheduling active alarms: ${e.message}")
             }
             return
         }
@@ -37,8 +43,15 @@ class AlarmReceiver : BroadcastReceiver() {
         // 2. First line for alarm triggers: Acquire CPU & Screen WakeLocks immediately
         AlarmWakeLockManager.acquireRingingWakeLocks(context)
 
+        // Extract alarm ID from extras, with fallback to data URI path segment
         val alarmId = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
-            ?: safeIntent.getStringExtra("EXTRA_ALARM_ID") ?: return
+            ?: safeIntent.getStringExtra("EXTRA_ALARM_ID")
+            ?: safeIntent.data?.lastPathSegment
+            ?: run {
+                Log.e(TAG, "[IronAlarmTrace:STAGE3_RECEIVER_ERROR] Trigger intent received with NULL alarmId! data=${safeIntent.data}, action=$action")
+                return
+            }
+
         val alarmLabel = safeIntent.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
             ?: safeIntent.getStringExtra("EXTRA_ALARM_LABEL")
         val soundIndex = if (safeIntent.hasExtra(AlarmScheduler.EXTRA_SOUND_INDEX)) {
@@ -53,26 +66,26 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         Log.i(
-            "AlarmDiag",
-            "[RECEIVER] Triggered at ${System.currentTimeMillis()} action=$action alarmId=$alarmId label=$alarmLabel"
+            TAG,
+            "[IronAlarmTrace:STAGE3_RECEIVER] SUCCESS -> Trigger received at $now for Alarm ID=$alarmId, label=$alarmLabel, soundIndex=$soundIndex, deleteAfter=$deleteAfter, action=$action, data=${safeIntent.data}"
         )
 
         when (action) {
             AlarmScheduler.ACTION_DISMISS_ALARM -> {
-                Log.d("AlarmDiag", "[RECEIVER] Dismiss action for alarmId=$alarmId")
+                Log.d(TAG, "[IronAlarmTrace:RECEIVER_DISMISS] Explicit dismiss action for alarmId=$alarmId")
                 AlarmRingingService.stopAndCleanup(context, alarmId)
             }
 
             AlarmScheduler.ACTION_SNOOZE_ALARM -> {
                 // Snooze is permanently disabled under IronDiscipline protocols
-                Log.d("AlarmDiag", "[RECEIVER] Snooze action (disabled) for alarmId=$alarmId")
+                Log.d(TAG, "[IronAlarmTrace:RECEIVER_SNOOZE] Snooze action (disabled) for alarmId=$alarmId")
                 AlarmRingingService.stopAndCleanup(context, alarmId)
             }
 
             else -> {
                 // Record timestamp to avoid duplicate triggers within 60s from watchdog
                 val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
-                prefs.edit().putLong("last_triggered_timestamp_$alarmId", System.currentTimeMillis()).commit()
+                prefs.edit().putLong("last_triggered_timestamp_$alarmId", now).commit()
 
                 // Initialize persistent Math Hard questions session state for this alarm
                 ActiveAlarmSessionState.initSession(alarmId)
@@ -83,9 +96,15 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
                     putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
                     putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
+                    putExtra(EXTRA_RECEIVER_TRIGGER_MS, now)
                     putExtra("EXTRA_IS_NEW_TRIGGER", true)
                 }
-                ContextCompat.startForegroundService(context, serviceIntent)
+                try {
+                    ContextCompat.startForegroundService(context, serviceIntent)
+                    Log.i(TAG, "[IronAlarmTrace:STAGE3_SERVICE_CALLED] ContextCompat.startForegroundService dispatched for Alarm ID=$alarmId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "[IronAlarmTrace:STAGE3_SERVICE_ERROR] Failed to start AlarmRingingService: ${e.message}", e)
+                }
 
                 // Also launch AlarmRingingActivity directly over lock screen
                 val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
@@ -93,6 +112,7 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
                     putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
                     putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
+                    putExtra(EXTRA_RECEIVER_TRIGGER_MS, now)
                     putExtra("EXTRA_IS_NEW_TRIGGER", true)
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -102,8 +122,9 @@ class AlarmReceiver : BroadcastReceiver() {
                 }
                 try {
                     context.startActivity(activityIntent)
+                    Log.i(TAG, "[IronAlarmTrace:STAGE3_ACTIVITY_CALLED] context.startActivity dispatched for Alarm ID=$alarmId")
                 } catch (e: Exception) {
-                    Log.e("AlarmDiag", "[RECEIVER] Failed to launch AlarmRingingActivity directly: ${e.message}")
+                    Log.w(TAG, "[IronAlarmTrace:STAGE3_ACTIVITY_WARN] Background direct startActivity blocked: ${e.message} (FGS fullScreenIntent will handle lock-screen display)")
                 }
             }
         }

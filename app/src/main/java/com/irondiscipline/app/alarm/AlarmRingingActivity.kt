@@ -103,6 +103,7 @@ class AlarmRingingActivity : ComponentActivity() {
         })
 
         activeAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY] AlarmRingingActivity onCreate for Alarm ID=$activeAlarmId")
         ActiveAlarmSessionState.initSession(activeAlarmId)
 
         val repository = AlarmRepository.getInstance(applicationContext)
@@ -130,6 +131,7 @@ class AlarmRingingActivity : ComponentActivity() {
 
         val incomingAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
         val isNewTrigger = intent.getBooleanExtra("EXTRA_IS_NEW_TRIGGER", false)
+        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY_RETRIGGER] onNewIntent incomingAlarmId=$incomingAlarmId, activeAlarmId=$activeAlarmId, isNewTrigger=$isNewTrigger")
 
         if (isNewTrigger || incomingAlarmId != activeAlarmId) {
             isAlarmDismissed = false

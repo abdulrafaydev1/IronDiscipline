@@ -111,6 +111,10 @@
             android:directBootAware="true">
             <intent-filter>
                 <action android:name="com.irondiscipline.app.ACTION_ALARM_TRIGGER" />
+                <data android:scheme="irondiscipline" android:host="alarm" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.irondiscipline.app.ACTION_ALARM_TRIGGER" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.TIME_SET" />
@@ -124,7 +128,11 @@
             android:enabled="true"
             android:exported="false"
             android:directBootAware="true"
-            android:foregroundServiceType="systemExempted" />
+            android:foregroundServiceType="mediaPlayback|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Emergency high-decibel discipline alarm audio and interactive dismissal challenge" />
+        </service>
 
         <activity
             android:name=".alarm.AlarmRingingActivity"

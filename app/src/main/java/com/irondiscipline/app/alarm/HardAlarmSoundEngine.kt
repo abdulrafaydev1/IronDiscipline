@@ -168,6 +168,7 @@ class HardAlarmSoundEngine private constructor() {
                     }
 
                     track.play()
+                    Log.i("IronAlarmTrace", "[IronAlarmTrace:AUDIO_PLAY_LOOP] AudioTrack track.play() started successfully for soundIndex=$soundIndex")
 
                     while (isPlaying && !Thread.currentThread().isInterrupted) {
                         val written = track.write(soundBuffer, 0, soundBuffer.size, AudioTrack.WRITE_BLOCKING)

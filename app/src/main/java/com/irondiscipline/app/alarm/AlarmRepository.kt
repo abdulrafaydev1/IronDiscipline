@@ -2,6 +2,7 @@ package com.irondiscipline.app.alarm
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,7 @@ class AlarmRepository(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "IronAlarmTrace"
         private const val PREFS_NAME = "iron_discipline_alarms_prefs"
         private const val KEY_ALARMS_JSON = "key_alarms_json"
 
@@ -69,7 +71,8 @@ class AlarmRepository(private val context: Context) {
         for (item in sorted) {
             array.put(item.toJsonObject())
         }
-        prefs.edit().putString(KEY_ALARMS_JSON, array.toString()).apply()
+        // Use synchronous commit() to guarantee zero lag for background services/watchdogs
+        prefs.edit().putString(KEY_ALARMS_JSON, array.toString()).commit()
         _alarmsFlow.value = sorted
     }
 
@@ -77,6 +80,11 @@ class AlarmRepository(private val context: Context) {
     fun saveAlarm(alarm: AlarmItem) {
         val nextTriggerMs = if (alarm.isEnabled) scheduler.calculateNextTriggerEpochMs(alarm) else 0L
         val alarmWithTrigger = alarm.copy(nextTriggerAtMillis = nextTriggerMs)
+
+        Log.i(
+            TAG,
+            "[IronAlarmTrace:STAGE1_SAVE] Alarm ID=${alarmWithTrigger.id}, time=${alarmWithTrigger.formattedTime}, isEnabled=${alarmWithTrigger.isEnabled}, triggerEpoch=$nextTriggerMs, repeatDays=${alarmWithTrigger.repeatDays.size}"
+        )
 
         val current = _alarmsFlow.value.toMutableList()
         val existingIndex = current.indexOfFirst { it.id == alarm.id }

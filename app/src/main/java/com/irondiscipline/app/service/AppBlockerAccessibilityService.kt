@@ -427,15 +427,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 val triggerAt = alarm.nextTriggerAtMillis
                 if (triggerAt <= 0L) continue
 
-                // Check if trigger time has arrived (within 45-second window)
-                if (now >= triggerAt && (now - triggerAt) <= 45_000L) {
+                // Check if trigger time has arrived (allow up to 15-minute catch-up window)
+                if (now >= triggerAt && (now - triggerAt) <= 15 * 60 * 1000L) {
                     val lastTriggeredKey = "last_triggered_timestamp_${alarm.id}"
                     val lastTriggered = prefs.getLong(lastTriggeredKey, 0L)
 
                     // Ensure this alarm hasn't fired in the last 60 seconds
                     if (now - lastTriggered > 60_000L) {
                         prefs.edit().putLong(lastTriggeredKey, now).commit()
-                        Log.i("AlarmDiag", "[WATCHDOG] Backup watchdog triggering alarm ID=${alarm.id}, drift=${now - triggerAt}ms")
+                        Log.i("IronAlarmTrace", "[IronAlarmTrace:WATCHDOG_TRIGGER] Backup watchdog triggering Alarm ID=${alarm.id}, drift=${now - triggerAt}ms")
 
                         // 1. Physically turn the screen ON from sleep!
                         AlarmWakeLockManager.acquireRingingWakeLocks(this)
@@ -449,6 +449,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                             putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm.label)
                             putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm.soundIndex)
                             putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+                            putExtra(AlarmReceiver.EXTRA_RECEIVER_TRIGGER_MS, now)
                             putExtra("EXTRA_IS_NEW_TRIGGER", true)
                         }
                         ContextCompat.startForegroundService(applicationContext, serviceIntent)
@@ -459,6 +460,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                             putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarm.label)
                             putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, alarm.soundIndex)
                             putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, alarm.deleteAfterRinging)
+                            putExtra(AlarmReceiver.EXTRA_RECEIVER_TRIGGER_MS, now)
                             putExtra("EXTRA_IS_NEW_TRIGGER", true)
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -469,13 +471,13 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                         try {
                             startActivity(activityIntent)
                         } catch (e: Exception) {
-                            Log.e("AlarmDiag", "[WATCHDOG] Error starting AlarmRingingActivity: ${e.message}")
+                            Log.e("IronAlarmTrace", "[IronAlarmTrace:WATCHDOG_ACTIVITY_ERROR] Error starting AlarmRingingActivity: ${e.message}")
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("AlarmDiag", "[WATCHDOG] Error in watchdog tick: ${e.message}")
+            Log.e("IronAlarmTrace", "[IronAlarmTrace:WATCHDOG_ERROR] Error in watchdog tick: ${e.message}")
         }
     }
 
