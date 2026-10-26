@@ -1,8 +1,11 @@
 package com.irondiscipline.app.util
 
 import android.Manifest
+import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlarmManager
 import android.app.NotificationManager
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -12,6 +15,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.service.AppBlockerAccessibilityService
@@ -248,6 +252,137 @@ object PermissionHelper {
                 "Enable Device Admin to prevent accidental home-launcher uninstallation of IronDiscipline without entering your 4-digit PIN."
             )
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    // --- Official Android Lock Task Mode & Global Actions (Power Menu) Restriction ---
+
+    fun isLockTaskPermitted(context: Context): Boolean {
+        val dpm = getDevicePolicyManager(context) ?: return false
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                dpm.isLockTaskPermitted(context.packageName)
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isLockTaskActive(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            am.isInLockTaskMode
+        }
+    }
+
+    fun isLockTaskLockedByDeviceOwner(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
+        } else {
+            false
+        }
+    }
+
+    /**
+     * Activates official Android Lock Task Mode to restrict the Power-Off menu while the alarm is ringing.
+     *
+     * In accordance with official Android SDK device management:
+     * - Only a Device Owner (or Profile Owner) can configure Lock Task features.
+     * - By omitting LOCK_TASK_FEATURE_GLOBAL_ACTIONS, Android's PhoneWindowManager disables the
+     *   Global Actions dialog (Power-Off, Restart, Lockdown) when the user presses the power button.
+     * - Essential status information (LOCK_TASK_FEATURE_SYSTEM_INFO) is retained so the user can
+     *   monitor battery, time, and signal.
+     * - If Device Owner is not provisioned, this method safely stands down and logs diagnostic details
+     *   to prevent launching an unmanaged screen pinning dialog.
+     */
+    fun enableLockTaskForAlarm(activity: Activity): Boolean {
+        val context = activity.applicationContext
+        if (!isDeviceOwner(context)) {
+            Log.i(
+                "PermissionHelper",
+                "Device Owner is NOT active. Ordinary third-party Android apps and standard Device Admins " +
+                "cannot suppress the system Global Actions (power-off) menu. " +
+                "To enable power-off suppression, provision Device Owner via ADB: " +
+                "adb shell dpm set-device-owner com.irondiscipline.app/.FocusDeviceAdminReceiver"
+            )
+            return false
+        }
+
+        val dpm = getDevicePolicyManager(context) ?: return false
+        val admin = getDeviceAdminComponent(context)
+        val pkg = activity.packageName
+
+        return try {
+            // 1. Whitelist our package for Lock Task mode if not already whitelisted
+            val currentPackages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                dpm.getLockTaskPackages(admin)
+            } else {
+                emptyArray()
+            }
+
+            if (!currentPackages.contains(pkg)) {
+                val updatedPackages = (currentPackages.toSet() + pkg).toTypedArray()
+                dpm.setLockTaskPackages(admin, updatedPackages)
+                Log.i("PermissionHelper", "Added $pkg to LockTask whitelisted packages")
+            }
+
+            // 2. Configure Lock Task features:
+            // Explicitly set LOCK_TASK_FEATURE_SYSTEM_INFO while OMITTING LOCK_TASK_FEATURE_GLOBAL_ACTIONS.
+            // This causes Android's PhoneWindowManager to disable the power-off / restart menu while in lock task mode.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO)
+                Log.i("PermissionHelper", "Configured LockTask features: omitted LOCK_TASK_FEATURE_GLOBAL_ACTIONS to suppress power menu")
+            }
+
+            // 3. Silently enter Lock Task mode (no user confirmation prompt because package is whitelisted)
+            activity.startLockTask()
+
+            val isLocked = isLockTaskLockedByDeviceOwner(context)
+            Log.i("PermissionHelper", "LockTaskMode active: $isLocked")
+            isLocked
+        } catch (e: SecurityException) {
+            Log.w("PermissionHelper", "SecurityException while enabling LockTaskMode for alarm: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.e("PermissionHelper", "Error enabling LockTaskMode for alarm: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Disables Lock Task Mode cleanly and restores standard system interaction.
+     * Called when the alarm is dismissed or upon Activity destruction.
+     */
+    fun disableLockTaskForAlarm(activity: Activity) {
+        val context = activity.applicationContext
+        try {
+            val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val isInLockTask = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am?.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+            } else {
+                @Suppress("DEPRECATION")
+                am?.isInLockTaskMode == true
+            }
+
+            if (isInLockTask) {
+                activity.stopLockTask()
+                Log.i("PermissionHelper", "Stopped LockTaskMode successfully")
+            }
+
+            // Restore default LockTask features if Device Owner
+            if (isDeviceOwner(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val dpm = getDevicePolicyManager(context)
+                val admin = getDeviceAdminComponent(context)
+                dpm?.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE)
+            }
+        } catch (e: Exception) {
+            Log.w("PermissionHelper", "Exception while stopping LockTaskMode: ${e.message}")
         }
     }
 }

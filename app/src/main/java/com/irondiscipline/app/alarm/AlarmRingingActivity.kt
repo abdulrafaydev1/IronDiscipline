@@ -12,6 +12,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import com.irondiscipline.app.util.PermissionHelper
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -90,6 +91,7 @@ class AlarmRingingActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeActivityRef = java.lang.ref.WeakReference(this)
         isAlarmDismissed = false
 
         // 1. Wake screen and display directly over lock screen
@@ -101,6 +103,9 @@ class AlarmRingingActivity : ComponentActivity() {
                 // Back button completely disabled until Math Hard is solved
             }
         })
+
+        // 3. If Device Owner is active, restrict Power-Off menu via official Lock Task Mode
+        PermissionHelper.enableLockTaskForAlarm(this)
 
         activeAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
         Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY] AlarmRingingActivity onCreate for Alarm ID=$activeAlarmId")
@@ -127,7 +132,11 @@ class AlarmRingingActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        activeActivityRef = java.lang.ref.WeakReference(this)
         applyScreenAndLockFlags()
+
+        // Re-assert Lock Task Mode restriction if Device Owner is active
+        PermissionHelper.enableLockTaskForAlarm(this)
 
         val incomingAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
         val isNewTrigger = intent.getBooleanExtra("EXTRA_IS_NEW_TRIGGER", false)
@@ -188,6 +197,11 @@ class AlarmRingingActivity : ComponentActivity() {
     private fun completeAlarmAndDismiss(alarmId: String?, reason: String = "MATH_SOLVED") {
         Log.d("AlarmDiag", "[DISMISS_CLEANUP] Reason=$reason, alarmId=$alarmId")
         isAlarmDismissed = true
+
+        // 1. Release Lock Task Mode immediately to restore standard power-off menu and navigation
+        PermissionHelper.disableLockTaskForAlarm(this)
+
+        // 2. Stop audio, vibration, and background foreground service
         AlarmRingingService.stopAndCleanup(applicationContext, alarmId)
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
@@ -210,6 +224,27 @@ class AlarmRingingActivity : ComponentActivity() {
             })
         } else {
             finishAndRemoveTask()
+        }
+    }
+
+    override fun onDestroy() {
+        // Failsafe: Ensure Lock Task Mode is released so the device is never left restricted
+        PermissionHelper.disableLockTaskForAlarm(this)
+        if (activeActivityRef?.get() === this) {
+            activeActivityRef = null
+        }
+        super.onDestroy()
+    }
+
+    companion object {
+        private var activeActivityRef: java.lang.ref.WeakReference<AlarmRingingActivity>? = null
+
+        fun releaseLockTaskIfActive() {
+            activeActivityRef?.get()?.let { act ->
+                try {
+                    PermissionHelper.disableLockTaskForAlarm(act)
+                } catch (_: Exception) {}
+            }
         }
     }
 }

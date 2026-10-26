@@ -93,6 +93,7 @@ class AlarmRingingService : Service() {
             ActiveAlarmSessionState.clearSession()
             HardAlarmSoundEngine.getInstance().stopSound()
             AlarmWakeLockManager.releaseAll()
+            AlarmRingingActivity.releaseLockTaskIfActive()
 
             val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
             prefs.edit().putBoolean("is_alarm_currently_ringing", false).commit()
