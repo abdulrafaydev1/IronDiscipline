@@ -1,6 +1,7 @@
 package com.irondiscipline.app.service
 
 import android.accessibilityservice.AccessibilityService
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -34,6 +35,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import com.irondiscipline.app.FocusDeviceAdminReceiver
 import com.irondiscipline.app.IronDisciplineApp
 import com.irondiscipline.app.alarm.ActiveAlarmSessionState
 import com.irondiscipline.app.alarm.AlarmReceiver
@@ -82,6 +84,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastInterceptVibrationMs: Long = 0L
 
+    @Volatile
+    private var serviceConnectedTimestampMs: Long = 0L
+
+    @Volatile
+    private var lastProtectedToastMs: Long = 0L
+
     // Live On-Screen Floating Timer Pill
     private var floatingPillView: TextView? = null
 
@@ -92,6 +100,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             try {
                 tickOneSecond()
                 checkBackupAlarmWatchdog()
+                checkProtectedNavigation(null)
             } catch (_: Exception) {}
             mainHandler.postDelayed(this, 1000L)
         }
@@ -100,6 +109,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        serviceConnectedTimestampMs = System.currentTimeMillis()
         realtimeQuotaManager = RealtimeQuotaManager.getInstance(applicationContext)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -113,6 +123,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        serviceConnectedTimestampMs = System.currentTimeMillis()
         DisciplineMonitorService.startServiceIfNeeded(applicationContext)
 
         mainHandler.removeCallbacks(tickerRunnable)
@@ -179,6 +190,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         val safeEvent = event ?: return
+        checkProtectedNavigation(safeEvent)
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         // 0. Emergency / Authorized App Uninstall: stand down protection and disable service
@@ -1140,6 +1152,101 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             lower.contains("oppo.launcher") ||
             lower.contains("vivo.launcher") ||
             lower.contains("huawei.android.launcher")
+    }
+
+    private fun collectVisibleText(node: AccessibilityNodeInfo?, sb: StringBuilder) {
+        if (node == null) return
+        try {
+            node.text?.let { sb.append(it).append(" ") }
+            node.contentDescription?.let { sb.append(it).append(" ") }
+            for (i in 0 until node.childCount) {
+                collectVisibleText(node.getChild(i), sb)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun checkProtectedNavigation(event: AccessibilityEvent?) {
+        val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+
+        // 1. If the user entered the valid 4-digit PIN within the last 60 seconds, allow uninstallation!
+        val pinVerifiedUntil = prefs.getLong("pin_verified_until_ms", 0L)
+        if (System.currentTimeMillis() < pinVerifiedUntil) {
+            hideBlockOverlay()
+            return
+        }
+
+        // 2. Give a 3-second grace window right after enabling the Accessibility Service
+        if (System.currentTimeMillis() - serviceConnectedTimestampMs < 3000L) {
+            return
+        }
+
+        val activePkg = (event?.packageName?.toString()
+            ?: try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+            ?: "").lowercase()
+
+        // Ignore our own app package
+        if (activePkg.isEmpty() || activePkg == packageName.lowercase()) return
+
+        val isSystemManagementScreen = activePkg.contains("packageinstaller") ||
+                activePkg.contains("settings") ||
+                activePkg.contains("miui.securitycenter") ||
+                activePkg.contains("coloros.safecenter") ||
+                activePkg.contains("oplus.safecenter") ||
+                activePkg.contains("vivo.permissionmanager")
+
+        if (!isSystemManagementScreen) return
+
+        val sb = StringBuilder()
+        event?.text?.forEach { sb.append(it).append(" ") }
+        try {
+            collectVisibleText(rootInActiveWindow, sb)
+        } catch (_: Exception) {}
+
+        val screenText = sb.toString().lowercase()
+        val isAboutOurApp = screenText.contains("irondiscipline") || screenText.contains("iron discipline")
+
+        if (!isAboutOurApp) return
+
+        // Allow activating Device Admin when it is currently OFF
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+        val adminComponent = android.content.ComponentName(this, FocusDeviceAdminReceiver::class.java)
+        val isAdminActive = try { dpm?.isAdminActive(adminComponent) ?: false } catch (_: Exception) { false }
+
+        if (!isAdminActive && (screenText.contains("activate this device admin") || screenText.contains("activate"))) {
+            if (!screenText.contains("uninstall") && !screenText.contains("force stop")) {
+                return // Let the user click "Activate" to turn ON Device Admin
+            }
+        }
+
+        // Check if the screen is an Uninstall dialog, App Info page, Device Admin deactivate page, or Service turn-off dialog
+        val isRestrictedScreen = screenText.contains("uninstall") ||
+                screenText.contains("delete") ||
+                screenText.contains("do you want to uninstall") ||
+                screenText.contains("force stop") ||
+                screenText.contains("clear data") ||
+                screenText.contains("clear storage") ||
+                screenText.contains("app info") ||
+                screenText.contains("deactivate") ||
+                screenText.contains("use service") ||
+                screenText.contains("turn off") ||
+                screenText.contains("disable") ||
+                screenText.contains("stop?")
+
+        if (isRestrictedScreen) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            val now = System.currentTimeMillis()
+            if (now - lastProtectedToastMs > 1500L) {
+                lastProtectedToastMs = now
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(
+                        applicationContext,
+                        "🔒 Protected Mode Active: Enter 4-digit PIN inside IronDiscipline to delete.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
     }
 
     override fun onInterrupt() {}

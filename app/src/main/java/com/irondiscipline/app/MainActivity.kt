@@ -94,6 +94,25 @@ fun IronDisciplineMainApp(viewModel: MainViewModel) {
 
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+    val context = LocalContext.current
+
+    // Auto-prompt Device Admin on app launch if not enabled yet
+    LaunchedEffect(Unit) {
+        val dpm = context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+        val adminComponent = android.content.ComponentName(context, FocusDeviceAdminReceiver::class.java)
+        if (dpm != null && !dpm.isAdminActive(adminComponent)) {
+            try {
+                val intent = android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                    putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                    putExtra(
+                        android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "Prevents accidental uninstallation without your 4-digit PIN."
+                    )
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {}
+        }
+    }
 
     LaunchedEffect(bannerMessage) {
         val msg = bannerMessage

@@ -66,6 +66,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.irondiscipline.app.FocusDeviceAdminReceiver
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.ui.components.UninstallPinDialog
 import com.irondiscipline.app.ui.components.jellyElastic
@@ -144,6 +145,28 @@ fun DashboardScreen(
             .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        val dpm = remember { context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager }
+        val adminComponent = remember { android.content.ComponentName(context, FocusDeviceAdminReceiver::class.java) }
+        val isDeviceAdminActive = remember(permissionState) {
+            try { dpm?.isAdminActive(adminComponent) == true } catch (_: Exception) { false }
+        }
+
+        // High-Visibility Banner: Prompt Device Admin if not enabled yet
+        if (!isDeviceAdminActive) {
+            DeviceAdminSetupBannerCard(
+                onActivateClick = {
+                    val intent = android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                        putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                        putExtra(
+                            android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                            "Prevents accidental uninstallation without your 4-digit PIN."
+                        )
+                    }
+                    context.startActivity(intent)
+                }
+            )
+        }
+
         // 1. Top "Command Header" & Live Animated Shield Status Pill
         CommandHeaderSection(
             permissionState = permissionState
@@ -991,6 +1014,81 @@ private fun PremiumAppDisciplineCard(
                         .fillMaxWidth(animatedFraction.coerceIn(0.01f, 1f))
                         .clip(RoundedCornerShape(4.dp))
                         .background(fillBrush)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * High-Visibility Banner Card prompting the user to enable Device Admin Uninstall Protection.
+ */
+@Composable
+fun DeviceAdminSetupBannerCard(
+    onActivateClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                BorderStroke(1.5.dp, Color(0xFF38BDF8)),
+                RoundedCornerShape(18.dp)
+            ),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Security,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(26.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "🛡️ Step Required: Enable Uninstall Protection",
+                        color = ColorTextPrimary,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "Prevents accidental uninstallation without entering your 4-digit PIN.",
+                        color = Color(0xFF38BDF8).copy(alpha = 0.85f),
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Button(
+                onClick = onActivateClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .jellyElastic(baseCornerRadius = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF38BDF8),
+                    contentColor = ColorObsidianDeep
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Shield,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Activate Protection Shield",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp
                 )
             }
         }
