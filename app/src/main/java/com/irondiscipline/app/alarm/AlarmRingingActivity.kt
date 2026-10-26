@@ -200,8 +200,8 @@ class AlarmRingingActivity : ComponentActivity() {
      * Intercept physical key presses in dispatchKeyEvent to prevent volume muting,
      * back navigation, or power button bypass while alarm is ringing.
      */
-    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
-        val keyCode = event?.keyCode
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
         if (AlarmRingingService.isCurrentlyRinging && !isAlarmDismissed) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN,
