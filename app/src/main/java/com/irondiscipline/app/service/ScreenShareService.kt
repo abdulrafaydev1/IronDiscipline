@@ -33,8 +33,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.irondiscipline.app.MainActivity
 import com.irondiscipline.app.R
-import com.irondiscipline.app.screenshare.ScreenCryptoHelper
 import com.irondiscipline.app.screenshare.ScreenRelayClient
+import com.irondiscipline.app.service.StreamCryptoEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
@@ -119,9 +119,9 @@ class ScreenShareService : Service() {
 
             this.currentRoomCode = roomCode
             this.audioMode = mode
-            this.hashedVideoTopic = ScreenCryptoHelper.videoTopic(roomCode)
-            this.hashedAudioTopic = ScreenCryptoHelper.audioTopic(roomCode)
-            this.aesKey = ScreenCryptoHelper.deriveKey(roomCode)
+            this.hashedVideoTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "v")
+            this.hashedAudioTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "a")
+            this.aesKey = StreamCryptoEngine.deriveAes256Key(roomCode)
             this.sessionStartTimeMs = System.currentTimeMillis()
 
             startForegroundWithNotification(roomCode)
@@ -354,8 +354,10 @@ class ScreenShareService : Service() {
                     val key = aesKey
                     val client = relayClient
                     if (key != null && client != null && client.isConnected && hashedAudioTopic.isNotEmpty()) {
-                        val encryptedAudio = ScreenCryptoHelper.encryptFrame(outBytes, key)
-                        client.publish(hashedAudioTopic, encryptedAudio)
+                        val encryptedAudio = StreamCryptoEngine.encryptPacket(outBytes, key)
+                        if (encryptedAudio != null) {
+                            client.publish(hashedAudioTopic, encryptedAudio)
+                        }
                     }
                 }
             } catch (_: Exception) {
@@ -429,9 +431,11 @@ class ScreenShareService : Service() {
                 // AES-256-GCM End-to-End Encryption
                 val key = aesKey
                 if (key != null && hashedVideoTopic.isNotEmpty()) {
-                    val encryptedPayload = ScreenCryptoHelper.encryptFrame(jpegBytes, key)
-                    client.publish(hashedVideoTopic, encryptedPayload)
-                    ScreenShareState.incrementFrames()
+                    val encryptedPayload = StreamCryptoEngine.encryptPacket(jpegBytes, key)
+                    if (encryptedPayload != null) {
+                        client.publish(hashedVideoTopic, encryptedPayload)
+                        ScreenShareState.incrementFrames()
+                    }
                 }
 
                 if (frameBitmap !== fullBitmap) {

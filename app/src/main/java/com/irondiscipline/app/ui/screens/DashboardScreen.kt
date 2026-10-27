@@ -105,6 +105,7 @@ import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.screenshare.ScreenViewerEngine
 import com.irondiscipline.app.service.ScreenShareService
 import com.irondiscipline.app.service.ScreenShareState
+import com.irondiscipline.app.service.StreamCryptoEngine
 import com.irondiscipline.app.ui.components.CreatePasswordDialog
 import com.irondiscipline.app.ui.components.LockPhoneAppsDialog
 import com.irondiscipline.app.ui.components.UninstallPinDialog
@@ -1495,6 +1496,48 @@ fun ScreenShareDialog(
 }
 
 @Composable
+private fun EncryptionStatusBadge() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF00E676).copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF081C15))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF00E676))
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = "🛡️ AES-256-GCM Encrypted (Video + Audio Protected)",
+                    color = Color(0xFF00E676),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.3.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "End-to-End Encrypted: Koi teesra phone ya server aapki screen ya aawaz nahi sun sakta.",
+                    color = Color(0xFF86EFAC),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SenderScreenTab(context: Context) {
     val isSharing by ScreenShareState.isSharing.collectAsState()
     val activeRoomCode by ScreenShareState.activeRoomCode.collectAsState()
@@ -1534,6 +1577,8 @@ private fun SenderScreenTab(context: Context) {
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        EncryptionStatusBadge()
+        Spacer(modifier = Modifier.height(14.dp))
         if (!isSharing) {
             // Room Code Display Card
             Card(
@@ -1864,6 +1909,8 @@ private fun ViewerScreenTab() {
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        EncryptionStatusBadge()
+        Spacer(modifier = Modifier.height(14.dp))
         if (!isConnected) {
             Card(
                 modifier = Modifier

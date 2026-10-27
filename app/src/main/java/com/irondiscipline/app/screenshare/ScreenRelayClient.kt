@@ -1,6 +1,7 @@
 package com.irondiscipline.app.screenshare
 
 import android.util.Log
+import com.irondiscipline.app.service.StreamCryptoEngine
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -166,25 +167,39 @@ class ScreenRelayClient(
      */
     @Synchronized
     fun subscribeWithTopic(topic: String, onMessage: (topic: String, payload: ByteArray) -> Unit): Boolean {
-        if (!isConnected || socket?.isClosed == true) return false
+        return subscribeTopics(listOf(topic), onMessage)
+    }
+
+    /**
+     * Subscribes to multiple MQTT topics in a single SUBSCRIBE packet (QoS 0).
+     */
+    @Synchronized
+    fun subscribeTopics(topics: List<String>, onMessage: (topic: String, payload: ByteArray) -> Unit): Boolean {
+        if (!isConnected || socket?.isClosed == true || topics.isEmpty()) return false
         val out = outputStream ?: return false
 
         this.messageListener = onMessage
-        this.subscribedTopic = topic
+        this.subscribedTopic = topics.joinToString(",")
 
         return try {
-            val topicBytes = topic.toByteArray(Charsets.UTF_8)
-            val packetId = 1
-            val remainingLength = 2 + 2 + topicBytes.size + 1
+            val packetId = (1..65535).random()
+            val payloadBaos = ByteArrayOutputStream()
+            for (t in topics) {
+                val tBytes = t.toByteArray(Charsets.UTF_8)
+                payloadBaos.write((tBytes.size shr 8) and 0xFF)
+                payloadBaos.write(tBytes.size and 0xFF)
+                payloadBaos.write(tBytes)
+                payloadBaos.write(0x00) // Requested QoS 0
+            }
+            val payloadBytes = payloadBaos.toByteArray()
+            val remainingLength = 2 + payloadBytes.size
+
             val packet = ByteArrayOutputStream(remainingLength + 5).apply {
                 write(0x82) // SUBSCRIBE
                 encodeRemainingLength(remainingLength, this)
                 write((packetId shr 8) and 0xFF)
                 write(packetId and 0xFF)
-                write((topicBytes.size shr 8) and 0xFF)
-                write(topicBytes.size and 0xFF)
-                write(topicBytes)
-                write(0x00) // Requested QoS 0
+                write(payloadBytes)
             }.toByteArray()
 
             out.write(packet)
@@ -193,14 +208,41 @@ class ScreenRelayClient(
             startReaderThread()
             true
         } catch (e: Exception) {
-            Log.e("ScreenRelayClient", "Error subscribing to $topic: ${e.message}")
+            Log.e("ScreenRelayClient", "Error subscribing to topics: ${e.message}")
             disconnect()
             false
         }
     }
 
+    /**
+     * Subscribes to the cloaked E2EE video and audio topics for the given roomCode,
+     * decrypting every incoming packet using AES-256-GCM (StreamCryptoEngine).
+     */
+    @Synchronized
+    fun subscribeEncryptedRoom(
+        roomCode: String,
+        onDecryptedVideo: (ByteArray) -> Unit,
+        onDecryptedAudio: (ByteArray) -> Unit
+    ): Boolean {
+        val sessionAesKey = StreamCryptoEngine.deriveAes256Key(roomCode)
+        val videoTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "v")
+        val audioTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "a")
+
+        return subscribeTopics(listOf(videoTopic, audioTopic)) { topic, incomingPayload ->
+            if (topic == videoTopic || topic.endsWith("/v")) {
+                val decryptedJpeg = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
+                    ?: return@subscribeTopics
+                onDecryptedVideo(decryptedJpeg)
+            } else if (topic == audioTopic || topic.endsWith("/a")) {
+                val decryptedPcm = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
+                    ?: return@subscribeTopics
+                onDecryptedAudio(decryptedPcm)
+            }
+        }
+    }
+
     private fun startReaderThread() {
-        readerThread?.interrupt()
+        if (readerThread?.isAlive == true) return
         readerThread = Thread({
             val input = inputStream ?: return@Thread
             try {

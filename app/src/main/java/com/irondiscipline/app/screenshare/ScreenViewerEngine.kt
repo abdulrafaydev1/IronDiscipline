@@ -7,6 +7,7 @@ import android.media.AudioTrack
 import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.irondiscipline.app.service.StreamCryptoEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -105,22 +106,26 @@ class ScreenViewerEngine {
             _isConnecting.value = false
             _statusMessage.value = "Connected to Room #$cleanCode. Waiting for stream..."
 
-            val wildcardTopic = ScreenCryptoHelper.baseTopicWildcard(cleanCode)
-            val aesKey = ScreenCryptoHelper.deriveKey(cleanCode)
+            val sessionAesKey = StreamCryptoEngine.deriveAes256Key(cleanCode)
+            val videoTopic = StreamCryptoEngine.deriveEncryptedTopic(cleanCode, "v")
+            val audioTopic = StreamCryptoEngine.deriveEncryptedTopic(cleanCode, "a")
 
-            val subscribed = client.subscribeWithTopic(wildcardTopic) { topic, encryptedBytes ->
+            val subscribed = client.subscribeTopics(listOf(videoTopic, audioTopic)) { topic, incomingPayload ->
                 try {
-                    val decryptedBytes = ScreenCryptoHelper.decryptFrame(encryptedBytes, aesKey)
-                        ?: return@subscribeWithTopic
+                    if (topic == audioTopic || topic.endsWith("/a")) {
+                        // Real-Time 16-bit PCM Audio Chunk Decrypted with AES-256-GCM
+                        val decryptedPcm = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
+                            ?: return@subscribeTopics
 
-                    if (topic.endsWith("/audio")) {
-                        // Real-Time Audio PCM Chunk
                         if (!_isAudioMuted.value) {
-                            viewerAudioTrack?.write(decryptedBytes, 0, decryptedBytes.size)
+                            viewerAudioTrack?.write(decryptedPcm, 0, decryptedPcm.size)
                         }
-                    } else {
-                        // Real-Time Video Frame
-                        val bmp = BitmapFactory.decodeByteArray(decryptedBytes, 0, decryptedBytes.size)
+                    } else if (topic == videoTopic || topic.endsWith("/v")) {
+                        // Real-Time Video Frame Decrypted with AES-256-GCM
+                        val decryptedJpeg = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
+                            ?: return@subscribeTopics
+
+                        val bmp = BitmapFactory.decodeByteArray(decryptedJpeg, 0, decryptedJpeg.size)
                         if (bmp != null) {
                             _currentFrame.value = bmp.asImageBitmap()
                             _framesReceived.value += 1
