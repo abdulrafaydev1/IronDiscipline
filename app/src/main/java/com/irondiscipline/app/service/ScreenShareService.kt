@@ -38,6 +38,7 @@ import com.irondiscipline.app.screenshare.ScreenRelayClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -62,6 +63,7 @@ class ScreenShareService : Service() {
     private var relayClient: ScreenRelayClient? = null
     private var currentRoomCode: String = ""
     private var audioMode: String = AUDIO_MODE_BOTH
+    private val localPhoneName: String by lazy { getLocalPhoneName() }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -197,6 +199,7 @@ class ScreenShareService : Service() {
         val modeLabel = when (audioMode) {
             AUDIO_MODE_INTERNAL -> "Internal Audio"
             AUDIO_MODE_MIC -> "Mic Voice"
+            AUDIO_MODE_NONE -> "Silent (No Sound)"
             else -> "Internal + Mic"
         }
 
@@ -283,6 +286,7 @@ class ScreenShareService : Service() {
             this.isStreamingActive = true
             client.startSender()
 
+            ScreenShareSessionManager.setSenderAudioMode(audioMode)
             ScreenShareSessionManager.setSenderActive(true, roomCode, "Streaming Live • Audio: $audioMode")
             ScreenShareState.updateState(true, roomCode, "Streaming Live • Audio: $audioMode")
 
@@ -308,39 +312,37 @@ class ScreenShareService : Service() {
         ).coerceAtLeast(2400)
 
         // 1. Setup Internal Audio capture via AudioPlaybackCaptureConfiguration (Android 10+)
-        if (audioMode == AUDIO_MODE_INTERNAL || audioMode == AUDIO_MODE_BOTH) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
-                        .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                        .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                        .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                        .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                    .build()
 
-                    val audioFormat = AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                        .build()
+                val audioFormat = AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                    .build()
 
-                    val record = AudioRecord.Builder()
-                        .setAudioFormat(audioFormat)
-                        .setBufferSizeInBytes(minBufSize * 2)
-                        .setAudioPlaybackCaptureConfig(captureConfig)
-                        .build()
+                val record = AudioRecord.Builder()
+                    .setAudioFormat(audioFormat)
+                    .setBufferSizeInBytes(minBufSize * 2)
+                    .setAudioPlaybackCaptureConfig(captureConfig)
+                    .build()
 
-                    if (record.state == AudioRecord.STATE_INITIALIZED) {
-                        record.startRecording()
-                        this.internalAudioRecord = record
-                    }
-                } catch (e: Exception) {
-                    Log.e("ScreenShareService", "Failed to initialize AudioPlaybackCapture: ${e.message}")
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    record.startRecording()
+                    this.internalAudioRecord = record
                 }
+            } catch (e: Exception) {
+                Log.e("ScreenShareService", "Failed to initialize AudioPlaybackCapture: ${e.message}")
             }
         }
 
         // 2. Setup Microphone Audio capture with fallback source if MIC is restricted
-        if (hasAudioPermission && (audioMode == AUDIO_MODE_MIC || audioMode == AUDIO_MODE_BOTH)) {
+        if (hasAudioPermission) {
             try {
                 var micRecord = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
@@ -381,23 +383,33 @@ class ScreenShareService : Service() {
 
             try {
                 while (isStreamingActive) {
+                    val currentMode = ScreenShareSessionManager.senderAudioMode.value
+
+                    if (currentMode == AUDIO_MODE_NONE) {
+                        Thread.sleep(80L)
+                        continue
+                    }
+
                     var internalRead = 0
                     var micRead = 0
 
+                    val shouldReadInternal = currentMode == AUDIO_MODE_INTERNAL || currentMode == AUDIO_MODE_BOTH
+                    val shouldReadMic = currentMode == AUDIO_MODE_MIC || currentMode == AUDIO_MODE_BOTH
+
                     val intRec = internalAudioRecord
-                    if (intRec != null && intRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    if (shouldReadInternal && intRec != null && intRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         internalRead = intRec.read(internalBuf, 0, shortsPerChunk)
                     }
                     val mRec = micAudioRecord
-                    if (mRec != null && mRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    if (shouldReadMic && mRec != null && mRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         micRead = mRec.read(micBuf, 0, shortsPerChunk)
                     }
 
                     val samplesCount = maxOf(internalRead, micRead)
                     if (samplesCount > 0) {
                         for (i in 0 until samplesCount) {
-                            val sInt = if (i < internalRead) internalBuf[i].toInt() else 0
-                            val sMic = if (i < micRead) micBuf[i].toInt() else 0
+                            val sInt = if (shouldReadInternal && i < internalRead) internalBuf[i].toInt() else 0
+                            val sMic = if (shouldReadMic && i < micRead) micBuf[i].toInt() else 0
                             // Boost slightly and clamp to 16-bit signed range
                             val mixed = (sInt + sMic).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
                             // Little-Endian 16-bit PCM byte packing
@@ -484,13 +496,15 @@ class ScreenShareService : Service() {
 
                 val baos = ByteArrayOutputStream()
                 frameBitmap.compress(Bitmap.CompressFormat.JPEG, 38, baos)
-                val jpegBytes = baos.toByteArray()
+                val rawJpegBytes = baos.toByteArray()
 
-                lastCapturedJpegBytes = jpegBytes
+                val packedBytes = packVideoFrameWithDeviceName(localPhoneName, rawJpegBytes)
+
+                lastCapturedJpegBytes = packedBytes
                 lastSentTimeMs = System.currentTimeMillis()
 
                 // Non-blocking lock-free enqueue to dedicated Video TCP socket thread
-                client.enqueueVideoFrame(jpegBytes)
+                client.enqueueVideoFrame(packedBytes)
                 ScreenShareSessionManager.incrementSenderFrames()
                 ScreenShareState.incrementFrames()
 
@@ -595,6 +609,32 @@ class ScreenShareService : Service() {
         const val AUDIO_MODE_INTERNAL = "INTERNAL"
         const val AUDIO_MODE_MIC = "MIC"
         const val AUDIO_MODE_BOTH = "BOTH"
+        const val AUDIO_MODE_NONE = "NONE"
+
+        fun getLocalPhoneName(): String {
+            val manufacturer = Build.MANUFACTURER?.trim()?.replaceFirstChar { it.uppercase() } ?: ""
+            val model = Build.MODEL?.trim() ?: "Android Phone"
+            val full = if (model.startsWith(manufacturer, ignoreCase = true)) model else "$manufacturer $model"
+            return full.take(36).ifBlank { "Android Phone" }
+        }
+
+        /**
+         * Packs [4-byte Magic 'I','D','M',1] + [1-byte Name Length] + [UTF-8 Device Name Bytes] + [Raw JPEG Bytes]
+         * before encrypting the entire packet with AES-256-GCM!
+         */
+        fun packVideoFrameWithDeviceName(deviceName: String, jpegBytes: ByteArray): ByteArray {
+            val nameBytes = deviceName.toByteArray(StandardCharsets.UTF_8)
+            val safeNameLen = nameBytes.size.coerceAtMost(60)
+            val out = ByteArray(5 + safeNameLen + jpegBytes.size)
+            out[0] = 'I'.code.toByte()
+            out[1] = 'D'.code.toByte()
+            out[2] = 'M'.code.toByte()
+            out[3] = 1.toByte()
+            out[4] = safeNameLen.toByte()
+            System.arraycopy(nameBytes, 0, out, 5, safeNameLen)
+            System.arraycopy(jpegBytes, 0, out, 5 + safeNameLen, jpegBytes.size)
+            return out
+        }
 
         fun stopSharing(context: Context) {
             val intent = Intent(context, ScreenShareService::class.java).apply {

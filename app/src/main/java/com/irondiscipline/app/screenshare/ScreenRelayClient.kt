@@ -145,10 +145,11 @@ class ScreenRelayClient(private val roomCode: String) {
     }
 
     /**
-     * Starts VIEWER mode: Receives & decrypts both Video frames and Audio chunks with 100% intact `readFully()`.
+     * Starts VIEWER mode: Receives & decrypts both Video frames (with Sender device name)
+     * and Audio chunks with 100% intact `readFully()`.
      */
     fun startViewer(
-        onFrameDecoded: (Bitmap) -> Unit,
+        onFrameDecoded: (deviceName: String, bitmap: Bitmap) -> Unit,
         onStatusChanged: (String) -> Unit
     ) {
         if (isRunning.getAndSet(true)) return
@@ -179,11 +180,28 @@ class ScreenRelayClient(private val roomCode: String) {
                         if ((packet.first and 0xF0) == 0x30) {
                             val payload = extractPublishPayload(packet.second)
                             if (payload != null) {
-                                val decryptedJpeg = StreamCryptoEngine.decryptPacket(payload, sessionKey)
-                                if (decryptedJpeg != null) {
-                                    val bmp = BitmapFactory.decodeByteArray(decryptedJpeg, 0, decryptedJpeg.size)
-                                    if (bmp != null) {
-                                        onFrameDecoded(bmp)
+                                val decryptedPayload = StreamCryptoEngine.decryptPacket(payload, sessionKey)
+                                if (decryptedPayload != null && decryptedPayload.size > 10) {
+                                    val hasHeader = decryptedPayload[0] == 'I'.code.toByte() &&
+                                                    decryptedPayload[1] == 'D'.code.toByte() &&
+                                                    decryptedPayload[2] == 'M'.code.toByte() &&
+                                                    decryptedPayload[3] == 1.toByte()
+
+                                    if (hasHeader) {
+                                        val nameLen = decryptedPayload[4].toInt() and 0xFF
+                                        val jpegOffset = 5 + nameLen
+                                        if (decryptedPayload.size > jpegOffset) {
+                                            val senderPhoneName = String(decryptedPayload, 5, nameLen, StandardCharsets.UTF_8)
+                                            val bmp = BitmapFactory.decodeByteArray(decryptedPayload, jpegOffset, decryptedPayload.size - jpegOffset)
+                                            if (bmp != null) {
+                                                onFrameDecoded(senderPhoneName, bmp)
+                                            }
+                                        }
+                                    } else {
+                                        val bmp = BitmapFactory.decodeByteArray(decryptedPayload, 0, decryptedPayload.size)
+                                        if (bmp != null) {
+                                            onFrameDecoded("Phone #$roomCode", bmp)
+                                        }
                                     }
                                 }
                             }
@@ -295,6 +313,19 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {}
             }
         }.apply { isDaemon = true; name = "ViewerAudioSpeakerThread"; start() }
+    }
+
+    /**
+     * Backward-compatible overload for single-bitmap consumer.
+     */
+    fun startViewer(
+        onFrameDecodedLegacy: (Bitmap) -> Unit,
+        onStatusChanged: (String) -> Unit
+    ) {
+        startViewer(
+            onFrameDecoded = { _, bmp -> onFrameDecodedLegacy(bmp) },
+            onStatusChanged = onStatusChanged
+        )
     }
 
     fun stop() {

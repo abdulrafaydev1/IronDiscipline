@@ -9,12 +9,22 @@ import com.irondiscipline.app.screenshare.ScreenRelayClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
+data class RemotePhoneSession(
+    val roomCode: String,
+    val phoneName: String = "Connecting (#$roomCode)...",
+    val latestFrame: Bitmap? = null,
+    val status: String = "Connecting...",
+    val isAudioMuted: Boolean = false
+)
+
 /**
- * Process-level singleton managing global persistent states for Live Screen Share (Sender & Viewer).
+ * Process-level singleton managing global persistent states for Live Screen Share (Sender & Multi-Phone Viewer).
  * Survives dialog closes, back button navigation, activity destruction, and screen lock/off states.
- * Only stops when explicitly requested by user action.
+ * Connects to multiple Sender phones simultaneously, each in its own dedicated named tab.
  */
 object ScreenShareSessionManager {
 
@@ -25,7 +35,8 @@ object ScreenShareSessionManager {
     private val _senderRoomCode = MutableStateFlow(generateRoomCode())
     val senderRoomCode: StateFlow<String> = _senderRoomCode.asStateFlow()
 
-    private val _senderAudioMode = MutableStateFlow("BOTH") // Default: Internal + Mic
+    // Supports: "INTERNAL", "MIC", "BOTH", "NONE" (Silent Mode)
+    private val _senderAudioMode = MutableStateFlow("BOTH")
     val senderAudioMode: StateFlow<String> = _senderAudioMode.asStateFlow()
 
     private val _senderFramesSent = MutableStateFlow(0L)
@@ -34,26 +45,17 @@ object ScreenShareSessionManager {
     private val _senderStatusText = MutableStateFlow("Idle")
     val senderStatusText: StateFlow<String> = _senderStatusText.asStateFlow()
 
-    // --- VIEWER GLOBAL STATE ---
+    // --- MULTI-PHONE VIEWER STATE ---
+    private val _viewerSessions = MutableStateFlow<List<RemotePhoneSession>>(emptyList())
+    val viewerSessions: StateFlow<List<RemotePhoneSession>> = _viewerSessions.asStateFlow()
+
+    private val _selectedTabRoomCode = MutableStateFlow<String?>(null)
+    val selectedTabRoomCode: StateFlow<String?> = _selectedTabRoomCode.asStateFlow()
+
     private val _isViewerConnected = MutableStateFlow(false)
     val isViewerConnected: StateFlow<Boolean> = _isViewerConnected.asStateFlow()
 
-    private val _viewerRoomCode = MutableStateFlow("")
-    val viewerRoomCode: StateFlow<String> = _viewerRoomCode.asStateFlow()
-
-    private val _viewerFrame = MutableStateFlow<Bitmap?>(null)
-    val viewerFrame: StateFlow<Bitmap?> = _viewerFrame.asStateFlow()
-
-    private val _viewerStatus = MutableStateFlow("Idle")
-    val viewerStatus: StateFlow<String> = _viewerStatus.asStateFlow()
-
-    private val _viewerFramesReceived = MutableStateFlow(0L)
-    val viewerFramesReceived: StateFlow<Long> = _viewerFramesReceived.asStateFlow()
-
-    private val _isViewerAudioMuted = MutableStateFlow(false)
-    val isViewerAudioMuted: StateFlow<Boolean> = _isViewerAudioMuted.asStateFlow()
-
-    private var activeViewerClient: ScreenRelayClient? = null
+    private val activeClients = ConcurrentHashMap<String, ScreenRelayClient>()
     private var viewerWakeLock: PowerManager.WakeLock? = null
     private var viewerWifiLock: WifiManager.WifiLock? = null
 
@@ -83,84 +85,136 @@ object ScreenShareSessionManager {
     }
 
     /**
-     * Starts persistent Viewer connection that stays alive even if the Viewer closes the dialog,
-     * leaves the app, or locks their phone screen.
-     * ONLY stops when `disconnectViewerExplicitly()` is called by the user.
+     * Connects to a new Sender phone by its 6-digit roomCode and adds a new Tab for it
+     * without disconnecting existing phone tabs!
      */
     @Synchronized
-    fun connectViewerPersistent(context: Context, code: String) {
-        val cleanCode = code.trim()
-        if (cleanCode.length < 4) return
+    fun addOrSelectViewerPhone(context: Context, rawCode: String) {
+        val code = rawCode.trim()
+        if (code.length < 4) return
 
-        // If already connected to this exact room code, keep running without interruption
-        if (_isViewerConnected.value && _viewerRoomCode.value == cleanCode && activeViewerClient != null) {
+        // If already connected to this code, simply switch to its tab!
+        if (activeClients.containsKey(code)) {
+            selectViewerTab(code)
             return
         }
 
-        // Clean up any previous viewer connection
-        disconnectViewerExplicitly()
-
-        _viewerRoomCode.value = cleanCode
-        _isViewerConnected.value = true
-        _viewerStatus.value = "Connecting to relay..."
-        _viewerFramesReceived.value = 0L
-
         acquireViewerLocks(context.applicationContext)
 
-        val client = ScreenRelayClient(cleanCode)
-        client.setAudioMuted(_isViewerAudioMuted.value)
-        activeViewerClient = client
+        val initialSession = RemotePhoneSession(
+            roomCode = code,
+            phoneName = "Phone #$code",
+            latestFrame = null,
+            status = "Connecting...",
+            isAudioMuted = false
+        )
+        _viewerSessions.update { current -> current + initialSession }
+        _selectedTabRoomCode.value = code
+        _isViewerConnected.value = true
+        syncAudioFocusAcrossTabs(selectedCode = code)
+
+        val client = ScreenRelayClient(code)
+        activeClients[code] = client
 
         client.startViewer(
-            onFrameDecoded = { bmp ->
-                _viewerFrame.value = bmp
-                _viewerFramesReceived.value += 1
-                _isViewerConnected.value = true
+            onFrameDecoded = { detectedPhoneName, bmp ->
+                _viewerSessions.update { list ->
+                    list.map { item ->
+                        if (item.roomCode == code) {
+                            item.copy(
+                                phoneName = detectedPhoneName.ifBlank { item.phoneName },
+                                latestFrame = bmp,
+                                status = "🟢 LIVE"
+                            )
+                        } else item
+                    }
+                }
             },
-            onStatusChanged = { status ->
-                _viewerStatus.value = status
-                if (status.contains("LIVE", true)) {
-                    _isViewerConnected.value = true
+            onStatusChanged = { newStatus ->
+                _viewerSessions.update { list ->
+                    list.map { item ->
+                        if (item.roomCode == code) item.copy(status = newStatus) else item
+                    }
                 }
             }
         )
     }
 
     /**
-     * ONLY called when the user explicitly clicks the "Disconnect" button.
-     * NEVER call this from Compose `onDispose` or `onStop`.
+     * Switches the active Viewer Tab to `code` and automatically routes speaker audio
+     * to the selected tab (unless manually muted by the user) so multiple phones don't talk over each other.
      */
-    @Synchronized
-    fun disconnectViewerExplicitly() {
-        _isViewerConnected.value = false
-        _viewerStatus.value = "Disconnected"
-        try {
-            activeViewerClient?.stop()
-        } catch (_: Exception) {}
-        activeViewerClient = null
-        _viewerFrame.value = null
-        _viewerFramesReceived.value = 0L
-        releaseViewerLocks()
+    fun selectViewerTab(code: String) {
+        _selectedTabRoomCode.value = code
+        syncAudioFocusAcrossTabs(selectedCode = code)
     }
 
-    fun toggleViewerMute(): Boolean {
-        val next = !_isViewerAudioMuted.value
-        _isViewerAudioMuted.value = next
-        activeViewerClient?.setAudioMuted(next)
-        return next
+    fun toggleMuteForPhone(code: String) {
+        _viewerSessions.update { list ->
+            list.map { item ->
+                if (item.roomCode == code) {
+                    item.copy(isAudioMuted = !item.isAudioMuted)
+                } else item
+            }
+        }
+        syncAudioFocusAcrossTabs(selectedCode = _selectedTabRoomCode.value)
+    }
+
+    private fun syncAudioFocusAcrossTabs(selectedCode: String?) {
+        val sessions = _viewerSessions.value
+        for (session in sessions) {
+            val client = activeClients[session.roomCode] ?: continue
+            // Play audio only for the currently selected tab if its mute toggle is OFF
+            val shouldMute = (session.roomCode != selectedCode) || session.isAudioMuted
+            client.setAudioMuted(shouldMute)
+        }
+    }
+
+    /**
+     * Disconnects ONLY the specified phone tab (`code`). Other connected phone tabs keep running!
+     */
+    @Synchronized
+    fun disconnectSinglePhoneTab(code: String) {
+        try {
+            activeClients.remove(code)?.stop()
+        } catch (_: Exception) {}
+
+        _viewerSessions.update { list -> list.filterNot { it.roomCode == code } }
+
+        val remaining = _viewerSessions.value
+        _isViewerConnected.value = remaining.isNotEmpty()
+
+        if (remaining.isEmpty()) {
+            _selectedTabRoomCode.value = null
+            releaseViewerLocks()
+        } else if (_selectedTabRoomCode.value == code) {
+            val nextCode = remaining.last().roomCode
+            _selectedTabRoomCode.value = nextCode
+            syncAudioFocusAcrossTabs(selectedCode = nextCode)
+        }
+    }
+
+    @Synchronized
+    fun disconnectAllViewerTabs() {
+        activeClients.values.forEach {
+            try { it.stop() } catch (_: Exception) {}
+        }
+        activeClients.clear()
+        _viewerSessions.value = emptyList()
+        _selectedTabRoomCode.value = null
+        _isViewerConnected.value = false
+        releaseViewerLocks()
     }
 
     private fun acquireViewerLocks(appContext: Context) {
         try {
             val pm = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
             if (pm != null && viewerWakeLock == null) {
-                viewerWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IronDiscipline:ViewerStreamLock").apply {
+                viewerWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IronDiscipline:MultiViewerLock").apply {
                     setReferenceCounted(false)
                 }
             }
-            if (viewerWakeLock?.isHeld == false) {
-                viewerWakeLock?.acquire()
-            }
+            if (viewerWakeLock?.isHeld == false) viewerWakeLock?.acquire()
 
             val wm = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             if (wm != null && viewerWifiLock == null) {
@@ -170,33 +224,18 @@ object ScreenShareSessionManager {
                 } else {
                     WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 }
-                viewerWifiLock = wm.createWifiLock(lockMode, "IronDiscipline:ViewerWifiLock").apply {
+                viewerWifiLock = wm.createWifiLock(lockMode, "IronDiscipline:MultiViewerWifiLock").apply {
                     setReferenceCounted(false)
                 }
             }
-            if (viewerWifiLock?.isHeld == false) {
-                viewerWifiLock?.acquire()
-            }
+            if (viewerWifiLock?.isHeld == false) viewerWifiLock?.acquire()
         } catch (_: Exception) {}
     }
 
     private fun releaseViewerLocks() {
-        try {
-            if (viewerWakeLock?.isHeld == true) viewerWakeLock?.release()
-        } catch (_: Exception) {}
+        try { if (viewerWakeLock?.isHeld == true) viewerWakeLock?.release() } catch (_: Exception) {}
         viewerWakeLock = null
-
-        try {
-            if (wifiLockHeld(viewerWifiLock)) viewerWifiLock?.release()
-        } catch (_: Exception) {}
+        try { if (viewerWifiLock?.isHeld == true) viewerWifiLock?.release() } catch (_: Exception) {}
         viewerWifiLock = null
-    }
-
-    private fun wifiLockHeld(lock: WifiManager.WifiLock?): Boolean {
-        return try {
-            lock?.isHeld == true
-        } catch (_: Exception) {
-            false
-        }
     }
 }

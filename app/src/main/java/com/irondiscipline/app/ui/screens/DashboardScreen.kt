@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -1332,12 +1333,12 @@ private fun MasterSecurityVaultCard(
             // Button 3: Live Screen Share (Share / Watch)
             val isSenderActive by ScreenShareSessionManager.isSenderActive.collectAsState()
             val senderRoomCode by ScreenShareSessionManager.senderRoomCode.collectAsState()
-            val isViewerConnected by ScreenShareSessionManager.isViewerConnected.collectAsState()
+            val viewerSessions by ScreenShareSessionManager.viewerSessions.collectAsState()
 
-            val isLiveActive = isSenderActive || isViewerConnected
+            val isLiveActive = isSenderActive || viewerSessions.isNotEmpty()
             val shareButtonText = when {
                 isSenderActive -> "🟢 Sharing Screen Live (#$senderRoomCode) — Tap to Open"
-                isViewerConnected -> "🟢 Watching Remote Screen Live — Tap to Open"
+                viewerSessions.isNotEmpty() -> "🟢 Watching ${viewerSessions.size} Remote Screen(s) — Tap to Open"
                 else -> "📡 Live Screen Share (Share / Watch)"
             }
 
@@ -1382,7 +1383,8 @@ fun ScreenShareDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectedTab by rememberSaveable { mutableIntStateOf(if (ScreenShareSessionManager.isViewerConnected.value) 1 else 0) }
+    val viewerSessions by ScreenShareSessionManager.viewerSessions.collectAsState()
+    var selectedTab by rememberSaveable { mutableIntStateOf(if (ScreenShareSessionManager.viewerSessions.value.isNotEmpty()) 1 else 0) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1486,7 +1488,7 @@ fun ScreenShareDialog(
                         onClick = { selectedTab = 1 },
                         text = {
                             Text(
-                                text = "📺 Watch Screen",
+                                text = if (viewerSessions.isNotEmpty()) "📺 Watch Screens (${viewerSessions.size})" else "📺 Watch Screen",
                                 fontWeight = if (selectedTab == 1) FontWeight.Black else FontWeight.Normal,
                                 color = if (selectedTab == 1) Color(0xFF38BDF8) else Color(0xFF8A99AD),
                                 fontSize = 13.sp
@@ -1590,6 +1592,57 @@ private fun SenderScreenTab(context: Context) {
     ) {
         EncryptionStatusBadge()
         Spacer(modifier = Modifier.height(14.dp))
+
+        // Device Name Badge
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF26334D), RoundedCornerShape(14.dp)),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1522))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x2638BDF8))
+                        .border(1.dp, Color(0xFF38BDF8), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tv,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "YOUR PHONE'S BROADCAST NAME",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                    Text(
+                        text = "📱 ${ScreenShareService.getLocalPhoneName()}",
+                        color = Color(0xFFFFFFFF),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
         if (!isSharing) {
             // Room Code Display Card
             Card(
@@ -1640,7 +1693,7 @@ private fun SenderScreenTab(context: Context) {
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Share this 6-digit code with the person who will watch your screen.",
+                        text = "Share this 6-digit code with the viewer. They can add multiple phones to watch simultaneously!",
                         color = Color(0xFF8A99AD),
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center
@@ -1650,7 +1703,7 @@ private fun SenderScreenTab(context: Context) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Audio Mode Selector
+            // Audio Mode Selector (4 options in a clean 2x2 grid)
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1666,23 +1719,62 @@ private fun SenderScreenTab(context: Context) {
                         fontSize = 11.sp,
                         letterSpacing = 0.5.sp
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Select what audio is captured & broadcasted to the viewer:",
+                        text = "Select what sound is broadcasted (switchable live anytime):",
                         color = Color(0xFF8A99AD),
                         fontSize = 12.sp
                     )
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    val row1Modes = listOf(
+                        ScreenShareService.AUDIO_MODE_INTERNAL to "🎵 Internal Sound",
+                        ScreenShareService.AUDIO_MODE_MIC to "🎙️ Mic Voice"
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val modes = listOf(
-                            ScreenShareService.AUDIO_MODE_INTERNAL to "🎵 Internal",
-                            ScreenShareService.AUDIO_MODE_MIC to "🎙️ Mic Voice",
-                            ScreenShareService.AUDIO_MODE_BOTH to "🔊 Both"
-                        )
-                        modes.forEach { (mode, label) ->
+                        row1Modes.forEach { (mode, label) ->
+                            val isSelected = selectedAudioMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelected) Color(0xFF38BDF8) else Color(0xFF182232))
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF38BDF8) else Color(0xFF26334D),
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .jellyElastic(baseCornerRadius = 10.dp)
+                                    .clickable { ScreenShareSessionManager.setSenderAudioMode(mode) }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color(0xFF06080E) else Color(0xFFBAC7D5),
+                                    fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val row2Modes = listOf(
+                        ScreenShareService.AUDIO_MODE_BOTH to "🔊 Both (Mix)",
+                        ScreenShareService.AUDIO_MODE_NONE to "🔇 None (Silent)"
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row2Modes.forEach { (mode, label) ->
                             val isSelected = selectedAudioMode == mode
                             Box(
                                 modifier = Modifier
@@ -1732,9 +1824,9 @@ private fun SenderScreenTab(context: Context) {
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "1. Click 'Start Screen Sharing' below and approve Android's screen & audio capture prompt.\n" +
-                               "2. Video and audio are encrypted on-device with AES-256-GCM using your Room Code key before transmission.\n" +
-                               "3. Topic name is SHA-256 hashed on the broker; only the viewer with your exact code can decrypt.\n" +
+                        text = "1. Click 'Start Screen Sharing' below and approve Android's screen capture prompt.\n" +
+                               "2. Video and device name are encrypted with AES-256-GCM using your Room Code key.\n" +
+                               "3. Audio mode can be switched dynamically between Internal, Mic, Both, or Silent anytime.\n" +
                                "4. Broadcast runs 24/7 persistently in the background until you explicitly tap 'Stop Screen Sharing'.",
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
@@ -1747,7 +1839,7 @@ private fun SenderScreenTab(context: Context) {
 
             Button(
                 onClick = {
-                    val needsMic = selectedAudioMode != ScreenShareService.AUDIO_MODE_INTERNAL
+                    val needsMic = selectedAudioMode == ScreenShareService.AUDIO_MODE_MIC || selectedAudioMode == ScreenShareService.AUDIO_MODE_BOTH
                     val hasMicPermission = ContextCompat.checkSelfPermission(
                         context,
                         Manifest.permission.RECORD_AUDIO
@@ -1837,7 +1929,75 @@ private fun SenderScreenTab(context: Context) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Dynamic Live Audio Mode Switcher
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF1E2838), RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111824))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "🎙️ LIVE AUDIO CONTROL: ",
+                            color = Color(0xFF38BDF8),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                        Text(
+                            text = selectedAudioMode,
+                            color = Color(0xFF00E676),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val allModes = listOf(
+                        ScreenShareService.AUDIO_MODE_INTERNAL to "🎵 Internal",
+                        ScreenShareService.AUDIO_MODE_MIC to "🎙️ Mic",
+                        ScreenShareService.AUDIO_MODE_BOTH to "🔊 Both",
+                        ScreenShareService.AUDIO_MODE_NONE to "🔇 Silent"
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        allModes.forEach { (mode, label) ->
+                            val isSelected = selectedAudioMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF38BDF8) else Color(0xFF182232))
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF38BDF8) else Color(0xFF26334D),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .jellyElastic(baseCornerRadius = 8.dp)
+                                    .clickable { ScreenShareSessionManager.setSenderAudioMode(mode) }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color(0xFF06080E) else Color(0xFFBAC7D5),
+                                    fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                    fontSize = 10.sp,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             Card(
                 modifier = Modifier
@@ -1855,7 +2015,7 @@ private fun SenderScreenTab(context: Context) {
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Your phone's screen is now broadcasting live over the internet. You can minimize this app, browse other applications, or lock/unlock without interrupting the stream.",
+                        text = "Broadcasting live as '${ScreenShareService.getLocalPhoneName()}'. You can minimize this app or lock the screen without interrupting the broadcast.",
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
                         lineHeight = 18.sp
@@ -1899,22 +2059,13 @@ private fun SenderScreenTab(context: Context) {
 private fun ViewerScreenTab() {
     val context = LocalContext.current
 
-    val isConnected by ScreenShareSessionManager.isViewerConnected.collectAsState()
-    val viewerRoomCode by ScreenShareSessionManager.viewerRoomCode.collectAsState()
-    val viewerFrame by ScreenShareSessionManager.viewerFrame.collectAsState()
-    val statusMessage by ScreenShareSessionManager.viewerStatus.collectAsState()
-    val framesReceived by ScreenShareSessionManager.viewerFramesReceived.collectAsState()
-    val isAudioMuted by ScreenShareSessionManager.isViewerAudioMuted.collectAsState()
+    val viewerSessions by ScreenShareSessionManager.viewerSessions.collectAsState()
+    val selectedTabRoomCode by ScreenShareSessionManager.selectedTabRoomCode.collectAsState()
 
-    var inputRoomCode by rememberSaveable { mutableStateOf(if (viewerRoomCode.isNotEmpty()) viewerRoomCode else "") }
+    var inputRoomCode by rememberSaveable { mutableStateOf("") }
+    val isInputValid = inputRoomCode.length == 6
 
-    LaunchedEffect(viewerRoomCode) {
-        if (viewerRoomCode.isNotEmpty()) {
-            inputRoomCode = viewerRoomCode
-        }
-    }
-
-    val isConnecting = !isConnected && statusMessage.contains("Connecting", true)
+    val activeSession = viewerSessions.find { it.roomCode == selectedTabRoomCode } ?: viewerSessions.firstOrNull()
 
     Column(
         modifier = Modifier
@@ -1924,39 +2075,39 @@ private fun ViewerScreenTab() {
     ) {
         EncryptionStatusBadge()
         Spacer(modifier = Modifier.height(14.dp))
-        if (!isConnected) {
-            Card(
+
+        // Top Connect Bar: Always visible so user can add multiple phones
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF26334D), RoundedCornerShape(16.dp)),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1522))
+        ) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, Color(0xFF26334D), RoundedCornerShape(16.dp)),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1522))
+                    .padding(14.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Text(
+                    text = "CONNECT TO SENDER PHONE",
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Enter a 6-digit Room Code to watch live. You can connect to multiple phones simultaneously:",
+                    color = Color(0xFF8A99AD),
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = "WATCH REMOTE SCREEN",
-                        color = Color(0xFF38BDF8),
-                        fontWeight = FontWeight.Black,
-                        fontSize = 11.sp,
-                        letterSpacing = 1.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Enter the 6-digit Room Code shown on the sender's phone:",
-                        color = Color(0xFF8A99AD),
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
                     OutlinedTextField(
                         value = inputRoomCode,
                         onValueChange = { newValue ->
@@ -1966,10 +2117,10 @@ private fun ViewerScreenTab() {
                         },
                         placeholder = {
                             Text(
-                                text = "e.g. 492817",
+                                text = "e.g. 482910",
                                 color = Color(0xFF5E6D82),
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 22.sp
+                                fontSize = 14.sp
                             )
                         },
                         singleLine = true,
@@ -1978,7 +2129,7 @@ private fun ViewerScreenTab() {
                             color = Color(0xFF38BDF8),
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Black,
-                            fontSize = 24.sp,
+                            fontSize = 16.sp,
                             textAlign = TextAlign.Center
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -1987,68 +2138,115 @@ private fun ViewerScreenTab() {
                             focusedContainerColor = Color(0xFF060910),
                             unfocusedContainerColor = Color(0xFF060910)
                         ),
-                        modifier = Modifier.width(220.dp)
+                        modifier = Modifier.weight(1f)
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = statusMessage,
-                        color = if (statusMessage.contains("failed", true) || statusMessage.contains("error", true)) Color(0xFFFF2E54) else Color(0xFF8A99AD),
-                        fontSize = 11.sp,
-                        textAlign = TextAlign.Center
-                    )
+                    Button(
+                        onClick = {
+                            ScreenShareSessionManager.addOrSelectViewerPhone(context, inputRoomCode)
+                            inputRoomCode = ""
+                        },
+                        enabled = isInputValid,
+                        modifier = Modifier
+                            .height(52.dp)
+                            .jellyElastic(baseCornerRadius = 12.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF38BDF8),
+                            disabledContainerColor = Color(0xFF1E2838),
+                            contentColor = Color(0xFF06080E),
+                            disabledContentColor = Color(0xFF5E6D82)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tv,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "➕ Add Phone",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
             }
+        }
 
-            Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-            Button(
-                onClick = {
-                    ScreenShareSessionManager.connectViewerPersistent(context, inputRoomCode)
-                },
-                enabled = inputRoomCode.length == 6 && !isConnecting,
+        // Multi-Phone Horizontal Device Tabs Bar
+        if (viewerSessions.isNotEmpty()) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .jellyElastic(baseCornerRadius = 14.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF38BDF8),
-                    disabledContainerColor = Color(0xFF1E2838),
-                    contentColor = Color(0xFF06080E),
-                    disabledContentColor = Color(0xFF5E6D82)
-                )
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (isConnecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = Color(0xFF06080E),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Connecting to Relay...",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 14.sp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Tv,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "🔗 Connect & Watch Live",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 14.sp
-                    )
+                viewerSessions.forEach { session ->
+                    val isSelected = session.roomCode == activeSession?.roomCode
+                    Card(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                width = 1.dp,
+                                color = if (isSelected) Color(0xFF38BDF8) else Color(0xFF26334D),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .clickable { ScreenShareSessionManager.selectViewerTab(session.roomCode) },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSelected) Color(0xFF162235) else Color(0xFF0F1522)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (session.status.contains("LIVE", true)) Color(0xFF00E676) else Color(0xFF38BDF8))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "📱 ${session.phoneName} (#${session.roomCode})",
+                                color = if (isSelected) Color(0xFFFFFFFF) else Color(0xFF8A99AD),
+                                fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x33FF2E54))
+                                    .clickable {
+                                        ScreenShareSessionManager.disconnectSinglePhoneTab(session.roomCode)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Disconnect tab",
+                                    tint = Color(0xFFFF2E54),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            // Connected: Live Video Feed Display
-            val activeCode = viewerRoomCode.ifEmpty { inputRoomCode }
+
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+
+        // Active Session View or Empty State
+        if (activeSession != null) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2062,7 +2260,7 @@ private fun ViewerScreenTab() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -2072,16 +2270,17 @@ private fun ViewerScreenTab() {
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "🔒 E2EE LIVE • ROOM #$activeCode",
+                                    text = "📱 ${activeSession.phoneName}",
                                     color = Color(0xFFFFFFFF),
                                     fontWeight = FontWeight.Black,
                                     fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 1
                                 )
                             }
                             Text(
-                                text = "AES-256-GCM Decrypted  •  Frames: $framesReceived",
-                                color = Color(0xFF00E676),
+                                text = "AES-256-GCM Encrypted • ${activeSession.status}",
+                                color = if (activeSession.status.contains("LIVE", true)) Color(0xFF00E676) else Color(0xFF38BDF8),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
@@ -2093,26 +2292,26 @@ private fun ViewerScreenTab() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             OutlinedButton(
-                                onClick = { ScreenShareSessionManager.toggleViewerMute() },
+                                onClick = { ScreenShareSessionManager.toggleMuteForPhone(activeSession.roomCode) },
                                 modifier = Modifier
                                     .height(34.dp)
                                     .jellyElastic(baseCornerRadius = 10.dp),
                                 shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, if (isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)),
+                                border = BorderStroke(1.dp, if (activeSession.isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)),
                                 colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)
+                                    contentColor = if (activeSession.isAudioMuted) Color(0xFFFF2E54) else Color(0xFF38BDF8)
                                 ),
                                 contentPadding = PaddingValues(horizontal = 8.dp)
                             ) {
                                 Text(
-                                    text = if (isAudioMuted) "🔇 Audio: MUTED" else "🔊 Audio: ON",
+                                    text = if (activeSession.isAudioMuted) "🔇 Audio: MUTED" else "🔊 Audio: ON",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp
                                 )
                             }
 
                             OutlinedButton(
-                                onClick = { ScreenShareSessionManager.disconnectViewerExplicitly() },
+                                onClick = { ScreenShareSessionManager.disconnectSinglePhoneTab(activeSession.roomCode) },
                                 modifier = Modifier
                                     .height(34.dp)
                                     .jellyElastic(baseCornerRadius = 10.dp),
@@ -2144,11 +2343,11 @@ private fun ViewerScreenTab() {
                             .border(1.dp, Color(0xFF1B2433), RoundedCornerShape(12.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        val currentBmp = viewerFrame
+                        val currentBmp = activeSession.latestFrame
                         if (currentBmp != null) {
                             Image(
                                 bitmap = currentBmp.asImageBitmap(),
-                                contentDescription = "Remote Screen Stream",
+                                contentDescription = "Remote Screen Stream for ${activeSession.phoneName}",
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .clip(RoundedCornerShape(12.dp)),
@@ -2174,7 +2373,7 @@ private fun ViewerScreenTab() {
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Make sure the sender on Room #$activeCode has started sharing.",
+                                    text = "Make sure ${activeSession.phoneName} on Room #${activeSession.roomCode} is sharing.",
                                     color = Color(0xFF8A99AD),
                                     fontSize = 11.sp,
                                     textAlign = TextAlign.Center
@@ -2182,6 +2381,44 @@ private fun ViewerScreenTab() {
                             }
                         }
                     }
+                }
+            }
+        } else {
+            // Empty State: No phones connected
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF1E2838), RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111824))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tv,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "NO PHONES CONNECTED YET",
+                        color = Color(0xFFFFFFFF),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Enter a 6-digit Room Code in the top bar and tap '➕ Add Phone' to watch. You can connect to multiple phones at the same time and switch between them using tabs!",
+                        color = Color(0xFF8A99AD),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
                 }
             }
         }
