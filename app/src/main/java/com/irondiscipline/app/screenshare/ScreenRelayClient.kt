@@ -1,390 +1,417 @@
 package com.irondiscipline.app.screenshare
 
-import android.util.Log
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import com.irondiscipline.app.service.StreamCryptoEngine
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
-import java.io.EOFException
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
+import java.io.DataInputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import javax.crypto.spec.SecretKeySpec
 
-/**
- * Lightweight Zero-Dependency MQTT v3.1.1 Client implemented with standard Kotlin TCP Sockets.
- * Connects to public MQTT broker (broker.emqx.io:1883) to relay screen frames between Sender and Viewer.
- */
-class ScreenRelayClient(
-    private val host: String = "broker.emqx.io",
-    private val port: Int = 1883
-) {
+class ScreenRelayClient(private val roomCode: String) {
 
-    @Volatile
-    var isConnected: Boolean = false
-        private set
+    private val isRunning = AtomicBoolean(false)
+    private val isViewerAudioMuted = AtomicBoolean(false)
+    private val sessionKey: SecretKeySpec = StreamCryptoEngine.deriveAes256Key(roomCode)
+    private val videoTopic: String = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "v")
+    private val audioTopic: String = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "a")
 
-    private var socket: Socket? = null
-    private var inputStream: InputStream? = null
-    private var outputStream: OutputStream? = null
+    // Lock-free Latest-Frame-Only holder (eliminates video lag 100%)
+    private val latestEncryptedVideoFrame = AtomicReference<ByteArray?>(null)
+    // Bounded audio queue (never lags behind real time)
+    private val outgoingAudioQueue = LinkedBlockingQueue<ByteArray>(12)
+    private val incomingAudioPlayQueue = LinkedBlockingQueue<ByteArray>(20)
 
-    private var pingThread: Thread? = null
-    private var readerThread: Thread? = null
-
-    private var frameListener: ((ByteArray) -> Unit)? = null
-    private var messageListener: ((topic: String, payload: ByteArray) -> Unit)? = null
-    private var subscribedTopic: String? = null
-
-    /**
-     * Connects to the MQTT broker and executes standard MQTT 3.1.1 CONNECT handshake.
-     */
-    @Synchronized
-    fun connect(timeoutMs: Int = 9000): Boolean {
-        if (isConnected && socket?.isConnected == true && socket?.isClosed == false) {
-            return true
-        }
-
-        disconnect()
-
-        return try {
-            val s = Socket()
-            s.tcpNoDelay = true
-            s.keepAlive = true
-            s.connect(InetSocketAddress(host, port), timeoutMs)
-            s.soTimeout = 0 // Blocking read on background threads
-
-            val inStream = BufferedInputStream(s.getInputStream(), 64 * 1024)
-            val outStream = BufferedOutputStream(s.getOutputStream(), 64 * 1024)
-
-            // Send MQTT 3.1.1 CONNECT packet
-            val clientId = "iron_" + UUID.randomUUID().toString().replace("-", "").take(10)
-
-            val vHeadAndPayload = ByteArrayOutputStream().apply {
-                // Protocol Name: "MQTT"
-                write(0x00)
-                write(0x04)
-                write('M'.code)
-                write('Q'.code)
-                write('T'.code)
-                write('T'.code)
-                // Protocol Level: 4 (MQTT 3.1.1)
-                write(0x04)
-                // Connect Flags: Clean Session (0x02)
-                write(0x02)
-                // Keep Alive: 60 seconds (0x003C)
-                write(0x00)
-                write(0x3C)
-                // Client ID
-                val cidBytes = clientId.toByteArray(Charsets.UTF_8)
-                write((cidBytes.size shr 8) and 0xFF)
-                write(cidBytes.size and 0xFF)
-                write(cidBytes)
-            }.toByteArray()
-
-            val packet = ByteArrayOutputStream().apply {
-                write(0x10) // CONNECT packet type
-                encodeRemainingLength(vHeadAndPayload.size, this)
-                write(vHeadAndPayload)
-            }.toByteArray()
-
-            outStream.write(packet)
-            outStream.flush()
-
-            // Read CONNACK response (0x20, 0x02, sessionPresent, returnCode)
-            val header = inStream.read()
-            if (header == -1) {
-                s.close()
-                return false
-            }
-            if ((header and 0xF0) != 0x20) {
-                s.close()
-                return false
-            }
-            val remLen = readRemainingLength(inStream)
-            val connackBody = ByteArray(remLen)
-            readFully(inStream, connackBody)
-            if (connackBody.size >= 2 && connackBody[1] != 0.toByte()) {
-                s.close()
-                return false
-            }
-
-            this.socket = s
-            this.inputStream = inStream
-            this.outputStream = outStream
-            this.isConnected = true
-
-            startPingThread()
-            true
-        } catch (e: Exception) {
-            Log.e("ScreenRelayClient", "Failed to connect to $host:$port: ${e.message}")
-            disconnect()
-            false
-        }
-    }
-
-    /**
-     * Publishes a raw byte array (JPEG frame) to the specified MQTT topic using QoS 0.
-     */
-    @Synchronized
-    fun publish(topic: String, payload: ByteArray): Boolean {
-        if (!isConnected || socket?.isClosed == true) return false
-        val out = outputStream ?: return false
-
-        return try {
-            val topicBytes = topic.toByteArray(Charsets.UTF_8)
-            val remainingLength = 2 + topicBytes.size + payload.size
-            val packet = ByteArrayOutputStream(remainingLength + 5).apply {
-                write(0x30) // PUBLISH QoS 0
-                encodeRemainingLength(remainingLength, this)
-                write((topicBytes.size shr 8) and 0xFF)
-                write(topicBytes.size and 0xFF)
-                write(topicBytes)
-                write(payload)
-            }.toByteArray()
-
-            out.write(packet)
-            out.flush()
-            true
-        } catch (e: Exception) {
-            Log.e("ScreenRelayClient", "Error publishing to $topic: ${e.message}")
-            disconnect()
-            false
-        }
-    }
-
-    /**
-     * Subscribes to the specified MQTT topic (QoS 0) and delivers incoming payloads to onFrame.
-     */
-    @Synchronized
-    fun subscribe(topic: String, onFrame: (ByteArray) -> Unit): Boolean {
-        return subscribeWithTopic(topic) { _, payload -> onFrame(payload) }
-    }
-
-    /**
-     * Subscribes to the specified MQTT topic (QoS 0) and delivers both topic name and payload to onMessage.
-     */
-    @Synchronized
-    fun subscribeWithTopic(topic: String, onMessage: (topic: String, payload: ByteArray) -> Unit): Boolean {
-        return subscribeTopics(listOf(topic), onMessage)
-    }
-
-    /**
-     * Subscribes to multiple MQTT topics in a single SUBSCRIBE packet (QoS 0).
-     */
-    @Synchronized
-    fun subscribeTopics(topics: List<String>, onMessage: (topic: String, payload: ByteArray) -> Unit): Boolean {
-        if (!isConnected || socket?.isClosed == true || topics.isEmpty()) return false
-        val out = outputStream ?: return false
-
-        this.messageListener = onMessage
-        this.subscribedTopic = topics.joinToString(",")
-
-        return try {
-            val packetId = (1..65535).random()
-            val payloadBaos = ByteArrayOutputStream()
-            for (t in topics) {
-                val tBytes = t.toByteArray(Charsets.UTF_8)
-                payloadBaos.write((tBytes.size shr 8) and 0xFF)
-                payloadBaos.write(tBytes.size and 0xFF)
-                payloadBaos.write(tBytes)
-                payloadBaos.write(0x00) // Requested QoS 0
-            }
-            val payloadBytes = payloadBaos.toByteArray()
-            val remainingLength = 2 + payloadBytes.size
-
-            val packet = ByteArrayOutputStream(remainingLength + 5).apply {
-                write(0x82) // SUBSCRIBE
-                encodeRemainingLength(remainingLength, this)
-                write((packetId shr 8) and 0xFF)
-                write(packetId and 0xFF)
-                write(payloadBytes)
-            }.toByteArray()
-
-            out.write(packet)
-            out.flush()
-
-            startReaderThread()
-            true
-        } catch (e: Exception) {
-            Log.e("ScreenRelayClient", "Error subscribing to topics: ${e.message}")
-            disconnect()
-            false
-        }
-    }
-
-    /**
-     * Subscribes to the cloaked E2EE video and audio topics for the given roomCode,
-     * decrypting every incoming packet using AES-256-GCM (StreamCryptoEngine).
-     */
-    @Synchronized
-    fun subscribeEncryptedRoom(
-        roomCode: String,
-        onDecryptedVideo: (ByteArray) -> Unit,
-        onDecryptedAudio: (ByteArray) -> Unit
-    ): Boolean {
-        val sessionAesKey = StreamCryptoEngine.deriveAes256Key(roomCode)
-        val videoTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "v")
-        val audioTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "a")
-
-        return subscribeTopics(listOf(videoTopic, audioTopic)) { topic, incomingPayload ->
-            if (topic == videoTopic || topic.endsWith("/v")) {
-                val decryptedJpeg = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
-                    ?: return@subscribeTopics
-                onDecryptedVideo(decryptedJpeg)
-            } else if (topic == audioTopic || topic.endsWith("/a")) {
-                val decryptedPcm = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
-                    ?: return@subscribeTopics
-                onDecryptedAudio(decryptedPcm)
-            }
-        }
-    }
-
-    private fun startReaderThread() {
-        if (readerThread?.isAlive == true) return
-        readerThread = Thread({
-            val input = inputStream ?: return@Thread
-            try {
-                while (isConnected && socket?.isClosed == false) {
-                    val headerByte = input.read()
-                    if (headerByte == -1) break
-                    val remainingLength = readRemainingLength(input)
-                    val packetType = headerByte and 0xF0
-
-                    if (packetType == 0x30) { // PUBLISH packet
-                        if (remainingLength < 2) continue
-                        val tLenMsb = input.read()
-                        val tLenLsb = input.read()
-                        if (tLenMsb == -1 || tLenLsb == -1) break
-                        val topicLen = (tLenMsb shl 8) or tLenLsb
-                        val topicBytes = ByteArray(topicLen)
-                        readFully(input, topicBytes)
-
-                        val qos = (headerByte and 0x06) shr 1
-                        if (qos > 0) {
-                            input.read()
-                            input.read()
-                        }
-                        val topicStr = String(topicBytes, Charsets.UTF_8)
-                        val payloadLen = remainingLength - 2 - topicLen - (if (qos > 0) 2 else 0)
-                        if (payloadLen > 0) {
-                            val payload = ByteArray(payloadLen)
-                            readFully(input, payload)
-                            messageListener?.invoke(topicStr, payload)
-                            frameListener?.invoke(payload)
-                        }
-                    } else if (packetType == 0x90) { // SUBACK
-                        skipFully(input, remainingLength)
-                    } else if (packetType == 0xD0) { // PINGRESP
-                        // Heartbeat confirmed
-                    } else {
-                        skipFully(input, remainingLength)
-                    }
-                }
-            } catch (e: Exception) {
-                if (isConnected) {
-                    Log.d("ScreenRelayClient", "Reader thread stopped: ${e.message}")
-                }
-            } finally {
-                disconnect()
-            }
-        }, "MqttReaderThread").apply {
-            isDaemon = true
-            start()
-        }
-    }
-
-    private fun startPingThread() {
-        pingThread?.interrupt()
-        pingThread = Thread({
-            try {
-                while (isConnected && socket?.isClosed == false) {
-                    Thread.sleep(20_000L)
-                    if (!isConnected || socket?.isClosed == true) break
-                    sendPing()
-                }
-            } catch (_: InterruptedException) {}
-        }, "MqttPingThread").apply {
-            isDaemon = true
-            start()
-        }
-    }
-
-    @Synchronized
-    private fun sendPing() {
-        try {
-            outputStream?.write(byteArrayOf(0xC0.toByte(), 0x00))
-            outputStream?.flush()
-        } catch (_: Exception) {}
-    }
-
-    @Synchronized
-    fun disconnect() {
-        isConnected = false
-        try {
-            outputStream?.write(byteArrayOf(0xE0.toByte(), 0x00))
-            outputStream?.flush()
-        } catch (_: Exception) {}
-
-        try { socket?.close() } catch (_: Exception) {}
-        pingThread?.interrupt()
-        readerThread?.interrupt()
-
-        socket = null
-        inputStream = null
-        outputStream = null
-        frameListener = null
-        messageListener = null
-    }
+    private var videoSocket: Socket? = null
+    private var audioSocket: Socket? = null
+    private var viewerAudioTrack: AudioTrack? = null
 
     companion object {
-        fun encodeRemainingLength(length: Int, out: OutputStream) {
-            var x = length
-            do {
-                var encodedByte = x % 128
-                x /= 128
-                if (x > 0) {
-                    encodedByte = encodedByte or 128
+        private const val BROKER_HOST = "broker.emqx.io"
+        private const val BROKER_PORT = 1883
+        const val AUDIO_SAMPLE_RATE = 12000 // 12kHz 16-bit Mono PCM = crystal clear & ultra-low bandwidth
+    }
+
+    fun setAudioMuted(muted: Boolean) {
+        isViewerAudioMuted.set(muted)
+    }
+
+    /**
+     * SENDER: Queues the latest encrypted JPEG frame. If an older frame hasn't been sent yet,
+     * it is immediately replaced by this newer frame -> ZERO LAG!
+     */
+    fun enqueueVideoFrame(rawJpegBytes: ByteArray) {
+        if (!isRunning.get()) return
+        val encrypted = StreamCryptoEngine.encryptPacket(rawJpegBytes, sessionKey) ?: return
+        latestEncryptedVideoFrame.set(encrypted)
+    }
+
+    /**
+     * SENDER: Queues an encrypted 16-bit PCM audio chunk for immediate transmission.
+     */
+    fun enqueueAudioChunk(rawPcmBytes: ByteArray) {
+        if (!isRunning.get()) return
+        val encrypted = StreamCryptoEngine.encryptPacket(rawPcmBytes, sessionKey) ?: return
+        if (!outgoingAudioQueue.offer(encrypted)) {
+            outgoingAudioQueue.poll() // Drop oldest chunk if full to keep real-time sync
+            outgoingAudioQueue.offer(encrypted)
+        }
+    }
+
+    /**
+     * Starts SENDER mode with 2 dedicated parallel TCP sockets (1 for Video, 1 for Audio).
+     */
+    fun startSender() {
+        if (isRunning.getAndSet(true)) return
+
+        // 1. Dedicated Video Sender Thread
+        Thread {
+            while (isRunning.get()) {
+                var sock: Socket? = null
+                try {
+                    sock = createOptimizedSocket()
+                    videoSocket = sock
+                    val out = BufferedOutputStream(sock.getOutputStream(), 32768)
+                    val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 4096))
+                    sendMqttConnect(out, "ID_VS_${UUID.randomUUID().toString().take(8)}")
+                    readMqttPacket(inp) // Read CONNACK
+
+                    var lastPing = System.currentTimeMillis()
+                    while (isRunning.get() && !sock.isClosed) {
+                        val frame = latestEncryptedVideoFrame.getAndSet(null)
+                        if (frame != null) {
+                            sendMqttPublish(out, videoTopic, frame)
+                        } else {
+                            Thread.sleep(12)
+                        }
+                        if (System.currentTimeMillis() - lastPing > 15000L) {
+                            sendMqttPing(out)
+                            lastPing = System.currentTimeMillis()
+                        }
+                    }
+                } catch (_: Exception) {
+                    Thread.sleep(600)
+                } finally {
+                    try { sock?.close() } catch (_: Exception) {}
                 }
-                out.write(encodedByte)
-            } while (x > 0)
-        }
-
-        fun readRemainingLength(input: InputStream): Int {
-            var multiplier = 1
-            var value = 0
-            var digit: Int
-            do {
-                digit = input.read()
-                if (digit == -1) throw EOFException("Socket closed")
-                value += (digit and 127) * multiplier
-                multiplier *= 128
-                if (multiplier > 128 * 128 * 128) throw IOException("Malformed Remaining Length")
-            } while ((digit and 128) != 0)
-            return value
-        }
-
-        fun readFully(input: InputStream, buffer: ByteArray) {
-            var offset = 0
-            while (offset < buffer.size) {
-                val count = input.read(buffer, offset, buffer.size - offset)
-                if (count == -1) throw EOFException("Unexpected EOF reading MQTT frame")
-                offset += count
             }
-        }
+        }.apply { isDaemon = true; name = "SenderVideoSocketThread"; start() }
 
-        fun skipFully(input: InputStream, length: Int) {
-            var remaining = length.toLong()
-            while (remaining > 0) {
-                val skipped = input.skip(remaining)
-                if (skipped <= 0) {
-                    if (input.read() == -1) throw EOFException("Unexpected EOF skipping MQTT frame")
-                    remaining--
-                } else {
-                    remaining -= skipped
+        // 2. Dedicated Audio Sender Thread (Never blocked by video frames!)
+        Thread {
+            while (isRunning.get()) {
+                var sock: Socket? = null
+                try {
+                    sock = createOptimizedSocket()
+                    audioSocket = sock
+                    val out = BufferedOutputStream(sock.getOutputStream(), 16384)
+                    val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 4096))
+                    sendMqttConnect(out, "ID_AS_${UUID.randomUUID().toString().take(8)}")
+                    readMqttPacket(inp) // Read CONNACK
+
+                    var lastPing = System.currentTimeMillis()
+                    while (isRunning.get() && !sock.isClosed) {
+                        val audioChunk = outgoingAudioQueue.poll(100, TimeUnit.MILLISECONDS)
+                        if (audioChunk != null) {
+                            sendMqttPublish(out, audioTopic, audioChunk)
+                        }
+                        if (System.currentTimeMillis() - lastPing > 15000L) {
+                            sendMqttPing(out)
+                            lastPing = System.currentTimeMillis()
+                        }
+                    }
+                } catch (_: Exception) {
+                    Thread.sleep(600)
+                } finally {
+                    try { sock?.close() } catch (_: Exception) {}
                 }
             }
+        }.apply { isDaemon = true; name = "SenderAudioSocketThread"; start() }
+    }
+
+    /**
+     * Starts VIEWER mode: Receives & decrypts both Video frames and Audio chunks with 100% intact `readFully()`.
+     */
+    fun startViewer(
+        onFrameDecoded: (Bitmap) -> Unit,
+        onStatusChanged: (String) -> Unit
+    ) {
+        if (isRunning.getAndSet(true)) return
+
+        // 1. Start Dedicated AudioTrack Speaker Playback Thread
+        startViewerAudioPlaybackThread()
+
+        // 2. Start Dedicated Video Receiver Thread
+        Thread {
+            while (isRunning.get()) {
+                var sock: Socket? = null
+                try {
+                    onStatusChanged("Connecting to encrypted stream...")
+                    sock = createOptimizedSocket()
+                    videoSocket = sock
+                    val out = BufferedOutputStream(sock.getOutputStream(), 4096)
+                    val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 65536))
+
+                    sendMqttConnect(out, "ID_VR_${UUID.randomUUID().toString().take(8)}")
+                    readMqttPacket(inp) // CONNACK
+                    sendMqttSubscribe(out, videoTopic, packetId = 1)
+                    onStatusChanged("🟢 LIVE: Connected (AES-256 Encrypted)")
+
+                    var lastPing = System.currentTimeMillis()
+                    while (isRunning.get() && !sock.isClosed) {
+                        val packet = readMqttPacket(inp) ?: break
+                        if ((packet.first and 0xF0) == 0x30) {
+                            val payload = extractPublishPayload(packet.second)
+                            if (payload != null) {
+                                val decryptedJpeg = StreamCryptoEngine.decryptPacket(payload, sessionKey)
+                                if (decryptedJpeg != null) {
+                                    val bmp = BitmapFactory.decodeByteArray(decryptedJpeg, 0, decryptedJpeg.size)
+                                    if (bmp != null) {
+                                        onFrameDecoded(bmp)
+                                    }
+                                }
+                            }
+                        }
+                        if (System.currentTimeMillis() - lastPing > 15000L) {
+                            sendMqttPing(out)
+                            lastPing = System.currentTimeMillis()
+                        }
+                    }
+                } catch (_: Exception) {
+                    if (isRunning.get()) {
+                        onStatusChanged("Reconnecting...")
+                        Thread.sleep(600)
+                    }
+                } finally {
+                    try { sock?.close() } catch (_: Exception) {}
+                }
+            }
+        }.apply { isDaemon = true; name = "ViewerVideoRecvThread"; start() }
+
+        // 3. Start Dedicated Audio Receiver Thread
+        Thread {
+            while (isRunning.get()) {
+                var sock: Socket? = null
+                try {
+                    sock = createOptimizedSocket()
+                    audioSocket = sock
+                    val out = BufferedOutputStream(sock.getOutputStream(), 4096)
+                    val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 32768))
+
+                    sendMqttConnect(out, "ID_AR_${UUID.randomUUID().toString().take(8)}")
+                    readMqttPacket(inp) // CONNACK
+                    sendMqttSubscribe(out, audioTopic, packetId = 2)
+
+                    var lastPing = System.currentTimeMillis()
+                    while (isRunning.get() && !sock.isClosed) {
+                        val packet = readMqttPacket(inp) ?: break
+                        if ((packet.first and 0xF0) == 0x30) {
+                            val payload = extractPublishPayload(packet.second)
+                            if (payload != null && !isViewerAudioMuted.get()) {
+                                val decryptedPcm = StreamCryptoEngine.decryptPacket(payload, sessionKey)
+                                if (decryptedPcm != null && decryptedPcm.isNotEmpty()) {
+                                    if (!incomingAudioPlayQueue.offer(decryptedPcm)) {
+                                        incomingAudioPlayQueue.poll()
+                                        incomingAudioPlayQueue.offer(decryptedPcm)
+                                    }
+                                }
+                            }
+                        }
+                        if (System.currentTimeMillis() - lastPing > 15000L) {
+                            sendMqttPing(out)
+                            lastPing = System.currentTimeMillis()
+                        }
+                    }
+                } catch (_: Exception) {
+                    Thread.sleep(600)
+                } finally {
+                    try { sock?.close() } catch (_: Exception) {}
+                }
+            }
+        }.apply { isDaemon = true; name = "ViewerAudioRecvThread"; start() }
+    }
+
+    private fun startViewerAudioPlaybackThread() {
+        Thread {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+            var track: AudioTrack? = null
+            try {
+                val minBuf = AudioTrack.getMinBufferSize(
+                    AUDIO_SAMPLE_RATE,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(2400)
+
+                track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MEDIA)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(AUDIO_SAMPLE_RATE)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBuf * 2)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+
+                viewerAudioTrack = track
+                track.setVolume(1.0f)
+                track.play()
+
+                while (isRunning.get()) {
+                    val pcmBytes = incomingAudioPlayQueue.poll(200, TimeUnit.MILLISECONDS)
+                    if (pcmBytes != null && !isViewerAudioMuted.get()) {
+                        track.write(pcmBytes, 0, pcmBytes.size)
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    track?.stop()
+                    track?.release()
+                } catch (_: Exception) {}
+            }
+        }.apply { isDaemon = true; name = "ViewerAudioSpeakerThread"; start() }
+    }
+
+    fun stop() {
+        isRunning.set(false)
+        latestEncryptedVideoFrame.set(null)
+        outgoingAudioQueue.clear()
+        incomingAudioPlayQueue.clear()
+        try { videoSocket?.close() } catch (_: Exception) {}
+        try { audioSocket?.close() } catch (_: Exception) {}
+        try {
+            viewerAudioTrack?.stop()
+            viewerAudioTrack?.release()
+        } catch (_: Exception) {}
+        viewerAudioTrack = null
+    }
+
+    private fun createOptimizedSocket(): Socket {
+        return Socket().apply {
+            tcpNoDelay = true
+            keepAlive = true
+            sendBufferSize = 65536
+            receiveBufferSize = 65536
+            soTimeout = 25000
+            connect(InetSocketAddress(BROKER_HOST, BROKER_PORT), 8000)
         }
+    }
+
+    // --- EXACT RFC MQTT v3.1.1 PACKET FRAMING WITH `readFully` ---
+
+    private fun writeMqttVarInt(out: ByteArrayOutputStream, length: Int) {
+        var x = length
+        do {
+            var encodedByte = x % 128
+            x /= 128
+            if (x > 0) encodedByte = encodedByte or 128
+            out.write(encodedByte)
+        } while (x > 0)
+    }
+
+    private fun readMqttPacket(inp: DataInputStream): Pair<Int, ByteArray>? {
+        val header = inp.readUnsignedByte()
+        var multiplier = 1
+        var value = 0
+        var encodedByte: Int
+        do {
+            encodedByte = inp.readUnsignedByte()
+            value += (encodedByte and 127) * multiplier
+            multiplier *= 128
+            if (multiplier > 128 * 128 * 128) return null
+        } while ((encodedByte and 128) != 0)
+
+        val payload = ByteArray(value)
+        if (value > 0) {
+            // CRITICAL FIX: readFully guarantees the ENTIRE frame is read across TCP packets!
+            inp.readFully(payload)
+        }
+        return Pair(header, payload)
+    }
+
+    private fun extractPublishPayload(body: ByteArray): ByteArray? {
+        if (body.size < 2) return null
+        val topicLen = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+        val payloadOffset = 2 + topicLen
+        if (body.size <= payloadOffset) return null
+        return body.copyOfRange(payloadOffset, body.size)
+    }
+
+    private fun sendMqttConnect(out: BufferedOutputStream, clientId: String) {
+        val clientBytes = clientId.toByteArray(StandardCharsets.UTF_8)
+        val body = ByteArrayOutputStream()
+        // Protocol Name "MQTT" (0x00, 0x04, 'M', 'Q', 'T', 'T'), Level 4, Flags 0x02 (Clean Session), KeepAlive 30s
+        body.write(byteArrayOf(0x00, 0x04, 'M'.code.toByte(), 'Q'.code.toByte(), 'T'.code.toByte(), 'T'.code.toByte(), 0x04, 0x02, 0x00, 0x1E))
+        body.write((clientBytes.size shr 8) and 0xFF)
+        body.write(clientBytes.size and 0xFF)
+        body.write(clientBytes)
+
+        val bodyBytes = body.toByteArray()
+        val packet = ByteArrayOutputStream()
+        packet.write(0x10)
+        writeMqttVarInt(packet, bodyBytes.size)
+        packet.write(bodyBytes)
+        out.write(packet.toByteArray())
+        out.flush()
+    }
+
+    private fun sendMqttSubscribe(out: BufferedOutputStream, topic: String, packetId: Int) {
+        val topicBytes = topic.toByteArray(StandardCharsets.UTF_8)
+        val body = ByteArrayOutputStream()
+        body.write((packetId shr 8) and 0xFF)
+        body.write(packetId and 0xFF)
+        body.write((topicBytes.size shr 8) and 0xFF)
+        body.write(topicBytes.size and 0xFF)
+        body.write(topicBytes)
+        body.write(0x00) // QoS 0
+
+        val bodyBytes = body.toByteArray()
+        val packet = ByteArrayOutputStream()
+        packet.write(0x82)
+        writeMqttVarInt(packet, bodyBytes.size)
+        packet.write(bodyBytes)
+        out.write(packet.toByteArray())
+        out.flush()
+    }
+
+    private fun sendMqttPublish(out: BufferedOutputStream, topic: String, payload: ByteArray) {
+        val topicBytes = topic.toByteArray(StandardCharsets.UTF_8)
+        val remainingLen = 2 + topicBytes.size + payload.size
+        val header = ByteArrayOutputStream()
+        header.write(0x30) // PUBLISH QoS 0
+        writeMqttVarInt(header, remainingLen)
+        header.write((topicBytes.size shr 8) and 0xFF)
+        header.write(topicBytes.size and 0xFF)
+        header.write(topicBytes)
+
+        out.write(header.toByteArray())
+        out.write(payload)
+        out.flush()
+    }
+
+    private fun sendMqttPing(out: BufferedOutputStream) {
+        out.write(byteArrayOf(0xC0.toByte(), 0x00))
+        out.flush()
     }
 }

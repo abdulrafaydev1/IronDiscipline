@@ -1,30 +1,18 @@
 package com.irondiscipline.app.screenshare
 
-import android.graphics.BitmapFactory
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
-import android.util.Log
+import android.graphics.Bitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import com.irondiscipline.app.service.StreamCryptoEngine
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 /**
  * Real-Time Screen & Audio Viewer Engine.
- * Subscribes to broker.emqx.io on the hashed wildcard topic and decrypts AES-256-GCM
- * video frames and real-time audio PCM stream for playback via AudioTrack.
+ * Wraps ScreenRelayClient's dual-channel network engine and audio playback system.
  */
 class ScreenViewerEngine {
 
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var relayClient: ScreenRelayClient? = null
-    private var viewerAudioTrack: AudioTrack? = null
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
@@ -45,7 +33,9 @@ class ScreenViewerEngine {
     val statusMessage = _statusMessage.asStateFlow()
 
     fun toggleAudioMute() {
-        _isAudioMuted.value = !_isAudioMuted.value
+        val newMuted = !_isAudioMuted.value
+        _isAudioMuted.value = newMuted
+        relayClient?.setAudioMuted(newMuted)
     }
 
     fun connect(roomCode: String) {
@@ -57,113 +47,39 @@ class ScreenViewerEngine {
 
         disconnect()
 
-        scope.launch {
-            _isConnecting.value = true
-            _statusMessage.value = "Connecting to relay broker..."
+        _isConnecting.value = true
+        _statusMessage.value = "Connecting to encrypted stream..."
 
-            val client = ScreenRelayClient()
-            val ok = client.connect(timeoutMs = 9000)
-            if (!ok) {
+        val client = ScreenRelayClient(cleanCode)
+        client.setAudioMuted(_isAudioMuted.value)
+        this.relayClient = client
+
+        client.startViewer(
+            onFrameDecoded = { bmp ->
+                _currentFrame.value = bmp.asImageBitmap()
+                _framesReceived.value += 1
+                _isConnected.value = true
                 _isConnecting.value = false
-                _statusMessage.value = "Connection failed. Please check internet and try again."
-                return@launch
-            }
-
-            // Initialize AudioTrack for real-time 16kHz 16-bit PCM streaming
-            try {
-                val minTrackBuf = AudioTrack.getMinBufferSize(
-                    16000,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                ).coerceAtLeast(3200)
-
-                val track = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(16000)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(minTrackBuf * 2)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-
-                track.play()
-                viewerAudioTrack = track
-            } catch (e: Exception) {
-                Log.e("ScreenViewerEngine", "Failed to initialize AudioTrack: ${e.message}")
-            }
-
-            relayClient = client
-            _isConnected.value = true
-            _isConnecting.value = false
-            _statusMessage.value = "Connected to Room #$cleanCode. Waiting for stream..."
-
-            val sessionAesKey = StreamCryptoEngine.deriveAes256Key(cleanCode)
-            val videoTopic = StreamCryptoEngine.deriveEncryptedTopic(cleanCode, "v")
-            val audioTopic = StreamCryptoEngine.deriveEncryptedTopic(cleanCode, "a")
-
-            val subscribed = client.subscribeTopics(listOf(videoTopic, audioTopic)) { topic, incomingPayload ->
-                try {
-                    if (topic == audioTopic || topic.endsWith("/a")) {
-                        // Real-Time 16-bit PCM Audio Chunk Decrypted with AES-256-GCM
-                        val decryptedPcm = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
-                            ?: return@subscribeTopics
-
-                        if (!_isAudioMuted.value) {
-                            viewerAudioTrack?.write(decryptedPcm, 0, decryptedPcm.size)
-                        }
-                    } else if (topic == videoTopic || topic.endsWith("/v")) {
-                        // Real-Time Video Frame Decrypted with AES-256-GCM
-                        val decryptedJpeg = StreamCryptoEngine.decryptPacket(incomingPayload, sessionAesKey)
-                            ?: return@subscribeTopics
-
-                        val bmp = BitmapFactory.decodeByteArray(decryptedJpeg, 0, decryptedJpeg.size)
-                        if (bmp != null) {
-                            _currentFrame.value = bmp.asImageBitmap()
-                            _framesReceived.value += 1
-                            _statusMessage.value = "🔒 E2EE Live Video & Audio (Room #$cleanCode)"
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("ScreenViewerEngine", "Error handling incoming stream payload: ${e.message}")
+            },
+            onStatusChanged = { status ->
+                _statusMessage.value = status
+                if (status.contains("LIVE", true)) {
+                    _isConnected.value = true
+                    _isConnecting.value = false
                 }
             }
-
-            if (!subscribed) {
-                _statusMessage.value = "Failed to subscribe to Room #$cleanCode"
-                disconnect()
-            }
-        }
+        )
     }
 
     fun disconnect() {
-        scope.launch {
-            try {
-                relayClient?.disconnect()
-            } catch (_: Exception) {}
-            relayClient = null
-
-            try {
-                if (viewerAudioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    viewerAudioTrack?.stop()
-                }
-                viewerAudioTrack?.release()
-            } catch (_: Exception) {}
-            viewerAudioTrack = null
-
-            _isConnected.value = false
-            _isConnecting.value = false
-            _currentFrame.value = null
-            _framesReceived.value = 0L
-            _statusMessage.value = "Disconnected"
-        }
+        try {
+            relayClient?.stop()
+        } catch (_: Exception) {}
+        relayClient = null
+        _isConnected.value = false
+        _isConnecting.value = false
+        _currentFrame.value = null
+        _framesReceived.value = 0L
+        _statusMessage.value = "Disconnected"
     }
 }

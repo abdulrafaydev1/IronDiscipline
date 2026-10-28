@@ -19,7 +19,6 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
-import android.media.AudioTrack
 import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
@@ -34,17 +33,16 @@ import androidx.core.content.ContextCompat
 import com.irondiscipline.app.MainActivity
 import com.irondiscipline.app.R
 import com.irondiscipline.app.screenshare.ScreenRelayClient
-import com.irondiscipline.app.service.StreamCryptoEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Foreground Service for Real-Time MediaProjection Screen Capture & Live Audio Streaming.
- * Streams encrypted 360x640 JPEG video and 16kHz 16-bit PCM audio (Internal, Mic, or Both)
- * over MQTT broker with AES-256-GCM End-to-End Encryption.
+ * Streams encrypted 320x568 JPEG video (~10 FPS lock-free drop-frame buffer)
+ * and 12,000 Hz 16-bit PCM audio (Internal, Mic, or Both) over dual parallel MQTT sockets
+ * with AES-256-GCM End-to-End Encryption.
  */
 class ScreenShareService : Service() {
 
@@ -60,9 +58,6 @@ class ScreenShareService : Service() {
 
     private var relayClient: ScreenRelayClient? = null
     private var currentRoomCode: String = ""
-    private var hashedVideoTopic: String = ""
-    private var hashedAudioTopic: String = ""
-    private var aesKey: SecretKeySpec? = null
     private var audioMode: String = AUDIO_MODE_BOTH
     private var sessionStartTimeMs: Long = 0L
 
@@ -81,7 +76,7 @@ class ScreenShareService : Service() {
             }
 
             captureAndPublishFrame()
-            backgroundHandler?.postDelayed(this, 220L) // ~4.5 FPS low-latency video stream
+            backgroundHandler?.postDelayed(this, 100L) // Smooth ~10 FPS screen capture
         }
     }
 
@@ -119,9 +114,6 @@ class ScreenShareService : Service() {
 
             this.currentRoomCode = roomCode
             this.audioMode = mode
-            this.hashedVideoTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "v")
-            this.hashedAudioTopic = StreamCryptoEngine.deriveEncryptedTopic(roomCode, "a")
-            this.aesKey = StreamCryptoEngine.deriveAes256Key(roomCode)
             this.sessionStartTimeMs = System.currentTimeMillis()
 
             startForegroundWithNotification(roomCode)
@@ -162,15 +154,14 @@ class ScreenShareService : Service() {
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val fgsType = if (hasAudioPermission) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                if (hasAudioPermission && (audioMode == AUDIO_MODE_MIC || audioMode == AUDIO_MODE_BOTH)) {
+                    fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
             }
             startForeground(NOTIFICATION_ID, notification, fgsType)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -190,7 +181,7 @@ class ScreenShareService : Service() {
         }
         this.mediaProjection = projection
 
-        // 1. Initialize dedicated background thread for video encoding & network IO
+        // 1. Initialize dedicated background thread for video encoding & frame handling
         val thread = HandlerThread("IronScreenShareCapture").apply { start() }
         this.backgroundThread = thread
         val handler = Handler(thread.looper)
@@ -204,11 +195,11 @@ class ScreenShareService : Service() {
             }
         }, handler)
 
-        // 3. Setup ImageReader and VirtualDisplay for video
+        // 3. Setup ImageReader and VirtualDisplay for video (fast, crisp 320 x 568 9:16 portrait screen stream)
         val metrics = resources.displayMetrics
         val densityDpi = metrics.densityDpi
-        val width = 360
-        val height = 640
+        val width = 320
+        val height = 568
 
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         this.imageReader = reader
@@ -224,24 +215,20 @@ class ScreenShareService : Service() {
             handler
         )
 
-        // 4. Connect MQTT client on background thread and start both video + audio loops
+        // 4. Start dual-channel ScreenRelayClient and capture loops
         handler.post {
-            val client = ScreenRelayClient()
-            val connected = client.connect()
-            if (connected) {
-                this.relayClient = client
-                this.isStreamingActive = true
-                ScreenShareState.updateState(true, roomCode, "Streaming Live • Audio: $audioMode")
+            val client = ScreenRelayClient(roomCode)
+            this.relayClient = client
+            this.isStreamingActive = true
+            client.startSender()
 
-                // Start video capture loop
-                handler.post(captureRunnable)
+            ScreenShareState.updateState(true, roomCode, "Streaming Live • Audio: $audioMode")
 
-                // Start real-time audio capture loop
-                startAudioCaptureLoop(projection)
-            } else {
-                Log.e("ScreenShareService", "Failed to connect to relay broker for room #$roomCode")
-                stopScreenCaptureService()
-            }
+            // Start video capture loop (~10 FPS lock-free Latest-Frame-Only buffer)
+            handler.post(captureRunnable)
+
+            // Start real-time audio capture loop
+            startAudioCaptureLoop(projection)
         }
     }
 
@@ -251,18 +238,14 @@ class ScreenShareService : Service() {
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (!hasAudioPermission) {
-            Log.w("ScreenShareService", "RECORD_AUDIO permission not granted; audio streaming skipped.")
-            return
-        }
-
+        val sampleRate = ScreenRelayClient.AUDIO_SAMPLE_RATE // 12,000 Hz
         val minBufSize = AudioRecord.getMinBufferSize(
-            16000,
+            sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(3200)
+        ).coerceAtLeast(2400)
 
-        // Setup Internal Audio capture via AudioPlaybackCaptureConfiguration (Android 10+)
+        // 1. Setup Internal Audio capture via AudioPlaybackCaptureConfiguration (Android 10+)
         if (audioMode == AUDIO_MODE_INTERNAL || audioMode == AUDIO_MODE_BOTH) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
@@ -274,7 +257,7 @@ class ScreenShareService : Service() {
 
                     val audioFormat = AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(16000)
+                        .setSampleRate(sampleRate)
                         .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
                         .build()
 
@@ -294,16 +277,29 @@ class ScreenShareService : Service() {
             }
         }
 
-        // Setup Microphone Audio capture
-        if (audioMode == AUDIO_MODE_MIC || audioMode == AUDIO_MODE_BOTH) {
+        // 2. Setup Microphone Audio capture with fallback source if MIC is restricted
+        if (hasAudioPermission && (audioMode == AUDIO_MODE_MIC || audioMode == AUDIO_MODE_BOTH)) {
             try {
-                val micRecord = AudioRecord(
+                var micRecord = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
-                    16000,
+                    sampleRate,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     minBufSize * 2
                 )
+
+                // Fallback to VOICE_RECOGNITION if MIC is restricted during MediaProjection
+                if (micRecord.state != AudioRecord.STATE_INITIALIZED) {
+                    try { micRecord.release() } catch (_: Exception) {}
+                    micRecord = AudioRecord(
+                        MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        minBufSize * 2
+                    )
+                }
+
                 if (micRecord.state == AudioRecord.STATE_INITIALIZED) {
                     micRecord.startRecording()
                     this.micAudioRecord = micRecord
@@ -313,51 +309,43 @@ class ScreenShareService : Service() {
             }
         }
 
-        // Dedicated Audio Streaming Thread (50ms PCM chunks = 800 shorts = 1600 bytes)
+        // 3. Dedicated Audio Capture Thread (100ms PCM chunks = 1200 shorts = 2400 bytes at 12kHz)
         val thread = Thread({
-            val internalShorts = ShortArray(800)
-            val micShorts = ShortArray(800)
-            val outBytes = ByteArray(1600)
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+            val shortsPerChunk = 1200 // 100ms at 12,000 Hz
+            val internalBuf = ShortArray(shortsPerChunk)
+            val micBuf = ShortArray(shortsPerChunk)
+            val outBytes = ByteArray(shortsPerChunk * 2)
 
             try {
                 while (isStreamingActive) {
-                    var hasInternal = false
-                    var hasMic = false
+                    var internalRead = 0
+                    var micRead = 0
 
                     val intRec = internalAudioRecord
-                    if (intRec?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        val readInt = intRec.read(internalShorts, 0, 800)
-                        if (readInt > 0) hasInternal = true
+                    if (intRec != null && intRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        internalRead = intRec.read(internalBuf, 0, shortsPerChunk)
                     }
-
                     val mRec = micAudioRecord
-                    if (mRec?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        val readMic = mRec.read(micShorts, 0, 800)
-                        if (readMic > 0) hasMic = true
+                    if (mRec != null && mRec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        micRead = mRec.read(micBuf, 0, shortsPerChunk)
                     }
 
-                    if (!hasInternal && !hasMic) {
-                        Thread.sleep(20L)
-                        continue
-                    }
-
-                    // Real-Time 16-bit PCM Audio Mixing
-                    for (i in 0 until 800) {
-                        val sA = if (hasInternal) internalShorts[i].toInt() else 0
-                        val sB = if (hasMic) micShorts[i].toInt() else 0
-                        val mixed = (sA + sB).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                        outBytes[i * 2] = (mixed and 0xFF).toByte()
-                        outBytes[i * 2 + 1] = ((mixed shr 8) and 0xFF).toByte()
-                    }
-
-                    // AES-256-GCM Encrypt and publish to audio topic
-                    val key = aesKey
-                    val client = relayClient
-                    if (key != null && client != null && client.isConnected && hashedAudioTopic.isNotEmpty()) {
-                        val encryptedAudio = StreamCryptoEngine.encryptPacket(outBytes, key)
-                        if (encryptedAudio != null) {
-                            client.publish(hashedAudioTopic, encryptedAudio)
+                    val samplesCount = maxOf(internalRead, micRead)
+                    if (samplesCount > 0) {
+                        for (i in 0 until samplesCount) {
+                            val sInt = if (i < internalRead) internalBuf[i].toInt() else 0
+                            val sMic = if (i < micRead) micBuf[i].toInt() else 0
+                            // Boost slightly and clamp to 16-bit signed range
+                            val mixed = (sInt + sMic).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                            // Little-Endian 16-bit PCM byte packing
+                            outBytes[i * 2] = (mixed.toInt() and 0xFF).toByte()
+                            outBytes[i * 2 + 1] = ((mixed.toInt() shr 8) and 0xFF).toByte()
                         }
+                        val validBytes = if (samplesCount == shortsPerChunk) outBytes else outBytes.copyOf(samplesCount * 2)
+                        relayClient?.enqueueAudioChunk(validBytes)
+                    } else {
+                        Thread.sleep(20L)
                     }
                 }
             } catch (_: Exception) {
@@ -389,7 +377,6 @@ class ScreenShareService : Service() {
         if (!isStreamingActive) return
         val reader = imageReader ?: return
         val client = relayClient ?: return
-        if (!client.isConnected) return
 
         if (!isCapturingFrame.compareAndSet(false, true)) {
             return // Skip if previous frame is still encoding
@@ -407,8 +394,8 @@ class ScreenShareService : Service() {
                 val buffer = planes[0].buffer
                 val pixelStride = planes[0].pixelStride
                 val rowStride = planes[0].rowStride
-                val width = 360
-                val height = 640
+                val width = 320
+                val height = 568
                 val rowPadding = rowStride - pixelStride * width
 
                 val fullBitmap = Bitmap.createBitmap(
@@ -425,18 +412,12 @@ class ScreenShareService : Service() {
                 }
 
                 val baos = ByteArrayOutputStream()
-                frameBitmap.compress(Bitmap.CompressFormat.JPEG, 45, baos)
+                frameBitmap.compress(Bitmap.CompressFormat.JPEG, 38, baos)
                 val jpegBytes = baos.toByteArray()
 
-                // AES-256-GCM End-to-End Encryption
-                val key = aesKey
-                if (key != null && hashedVideoTopic.isNotEmpty()) {
-                    val encryptedPayload = StreamCryptoEngine.encryptPacket(jpegBytes, key)
-                    if (encryptedPayload != null) {
-                        client.publish(hashedVideoTopic, encryptedPayload)
-                        ScreenShareState.incrementFrames()
-                    }
-                }
+                // Non-blocking lock-free enqueue to dedicated Video TCP socket thread
+                client.enqueueVideoFrame(jpegBytes)
+                ScreenShareState.incrementFrames()
 
                 if (frameBitmap !== fullBitmap) {
                     frameBitmap.recycle()
@@ -488,7 +469,7 @@ class ScreenShareService : Service() {
         backgroundThread = null
         backgroundHandler = null
 
-        relayClient?.disconnect()
+        try { relayClient?.stop() } catch (_: Exception) {}
         relayClient = null
 
         ScreenShareState.updateState(false, null, "Stopped")
