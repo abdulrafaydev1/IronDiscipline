@@ -80,9 +80,10 @@ class ScreenRelayClient(private val roomCode: String) {
         // 1. Dedicated Video Sender Thread
         Thread {
             while (isRunning.get()) {
-                var sock: Socket? = null
+                var activeSock: Socket? = null
                 try {
-                    sock = createOptimizedSocket()
+                    val sock = createOptimizedSocket()
+                    activeSock = sock
                     videoSocket = sock
                     val out = BufferedOutputStream(sock.getOutputStream(), 32768)
                     val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 4096))
@@ -105,7 +106,7 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {
                     Thread.sleep(600)
                 } finally {
-                    try { sock?.close() } catch (_: Exception) {}
+                    try { activeSock?.close() } catch (_: Exception) {}
                 }
             }
         }.apply { isDaemon = true; name = "SenderVideoSocketThread"; start() }
@@ -113,9 +114,10 @@ class ScreenRelayClient(private val roomCode: String) {
         // 2. Dedicated Audio Sender Thread (Never blocked by video frames!)
         Thread {
             while (isRunning.get()) {
-                var sock: Socket? = null
+                var activeSock: Socket? = null
                 try {
-                    sock = createOptimizedSocket()
+                    val sock = createOptimizedSocket()
+                    activeSock = sock
                     audioSocket = sock
                     val out = BufferedOutputStream(sock.getOutputStream(), 16384)
                     val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 4096))
@@ -136,7 +138,7 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {
                     Thread.sleep(600)
                 } finally {
-                    try { sock?.close() } catch (_: Exception) {}
+                    try { activeSock?.close() } catch (_: Exception) {}
                 }
             }
         }.apply { isDaemon = true; name = "SenderAudioSocketThread"; start() }
@@ -157,10 +159,11 @@ class ScreenRelayClient(private val roomCode: String) {
         // 2. Start Dedicated Video Receiver Thread
         Thread {
             while (isRunning.get()) {
-                var sock: Socket? = null
+                var activeSock: Socket? = null
                 try {
                     onStatusChanged("Connecting to encrypted stream...")
-                    sock = createOptimizedSocket()
+                    val sock = createOptimizedSocket()
+                    activeSock = sock
                     videoSocket = sock
                     val out = BufferedOutputStream(sock.getOutputStream(), 4096)
                     val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 65536))
@@ -196,7 +199,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         Thread.sleep(600)
                     }
                 } finally {
-                    try { sock?.close() } catch (_: Exception) {}
+                    try { activeSock?.close() } catch (_: Exception) {}
                 }
             }
         }.apply { isDaemon = true; name = "ViewerVideoRecvThread"; start() }
@@ -204,9 +207,10 @@ class ScreenRelayClient(private val roomCode: String) {
         // 3. Start Dedicated Audio Receiver Thread
         Thread {
             while (isRunning.get()) {
-                var sock: Socket? = null
+                var activeSock: Socket? = null
                 try {
-                    sock = createOptimizedSocket()
+                    val sock = createOptimizedSocket()
+                    activeSock = sock
                     audioSocket = sock
                     val out = BufferedOutputStream(sock.getOutputStream(), 4096)
                     val inp = DataInputStream(BufferedInputStream(sock.getInputStream(), 32768))
@@ -238,7 +242,7 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {
                     Thread.sleep(600)
                 } finally {
-                    try { sock?.close() } catch (_: Exception) {}
+                    try { activeSock?.close() } catch (_: Exception) {}
                 }
             }
         }.apply { isDaemon = true; name = "ViewerAudioRecvThread"; start() }
