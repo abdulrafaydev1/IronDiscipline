@@ -87,6 +87,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -104,6 +105,7 @@ import com.irondiscipline.app.domain.model.AppLockerItem
 import com.irondiscipline.app.domain.model.PermissionStatusState
 import com.irondiscipline.app.screenshare.ScreenViewerEngine
 import com.irondiscipline.app.service.ScreenShareService
+import com.irondiscipline.app.service.ScreenShareSessionManager
 import com.irondiscipline.app.service.ScreenShareState
 import com.irondiscipline.app.service.StreamCryptoEngine
 import com.irondiscipline.app.ui.components.CreatePasswordDialog
@@ -1327,7 +1329,17 @@ private fun MasterSecurityVaultCard(
             Spacer(modifier = Modifier.height(10.dp))
 
             // Button 3: Live Screen Share (Share / Watch)
-            val isSharingScreen by ScreenShareState.isSharing.collectAsState()
+            val isSenderActive by ScreenShareSessionManager.isSenderActive.collectAsState()
+            val senderRoomCode by ScreenShareSessionManager.senderRoomCode.collectAsState()
+            val isViewerConnected by ScreenShareSessionManager.isViewerConnected.collectAsState()
+
+            val isLiveActive = isSenderActive || isViewerConnected
+            val shareButtonText = when {
+                isSenderActive -> "🟢 Sharing Screen Live (#$senderRoomCode) — Tap to Open"
+                isViewerConnected -> "🟢 Watching Remote Screen Live — Tap to Open"
+                else -> "📡 Live Screen Share (Share / Watch)"
+            }
+
             Button(
                 onClick = onLiveScreenShareClick,
                 modifier = Modifier
@@ -1336,23 +1348,23 @@ private fun MasterSecurityVaultCard(
                     .jellyElastic(baseCornerRadius = 12.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isSharingScreen) Color(0xFF132B25) else Color(0xFF111927),
+                    containerColor = if (isLiveActive) Color(0xFF132B25) else Color(0xFF111927),
                     contentColor = Color(0xFFFFFFFF)
                 ),
                 border = BorderStroke(
                     1.dp,
-                    if (isSharingScreen) Color(0xFF00E676) else Color(0xFF38BDF8).copy(alpha = 0.6f)
+                    if (isLiveActive) Color(0xFF00E676) else Color(0xFF38BDF8).copy(alpha = 0.6f)
                 )
             ) {
                 Icon(
                     imageVector = Icons.Default.Share,
                     contentDescription = null,
-                    tint = if (isSharingScreen) Color(0xFF00E676) else Color(0xFF38BDF8),
+                    tint = if (isLiveActive) Color(0xFF00E676) else Color(0xFF38BDF8),
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isSharingScreen) "🟢 Live Screen Share Active (Tap to View)" else "📡 Live Screen Share (Share / Watch)",
+                    text = shareButtonText,
                     fontWeight = FontWeight.Black,
                     fontSize = 13.sp
                 )
@@ -1369,7 +1381,7 @@ fun ScreenShareDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(if (ScreenShareSessionManager.isViewerConnected.value) 1 else 0) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1424,7 +1436,7 @@ fun ScreenShareDialog(
                                 letterSpacing = 0.5.sp
                             )
                             Text(
-                                text = "🔒 End-to-End Encrypted (AES-256-GCM) • 15m Auto-Stop",
+                                text = "🔒 End-to-End Encrypted (AES-256-GCM) • Persistent Stream",
                                 color = Color(0xFF00E676),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp
@@ -1539,13 +1551,11 @@ private fun EncryptionStatusBadge() {
 
 @Composable
 private fun SenderScreenTab(context: Context) {
-    val isSharing by ScreenShareState.isSharing.collectAsState()
-    val activeRoomCode by ScreenShareState.activeRoomCode.collectAsState()
-    val framesSent by ScreenShareState.framesSent.collectAsState()
-    val statusText by ScreenShareState.statusText.collectAsState()
-
-    var roomCode by rememberSaveable { mutableStateOf((100000..999999).random().toString()) }
-    var selectedAudioMode by rememberSaveable { mutableStateOf(ScreenShareService.AUDIO_MODE_BOTH) }
+    val isSharing by ScreenShareSessionManager.isSenderActive.collectAsState()
+    val activeRoomCode by ScreenShareSessionManager.senderRoomCode.collectAsState()
+    val framesSent by ScreenShareSessionManager.senderFramesSent.collectAsState()
+    val statusText by ScreenShareSessionManager.senderStatusText.collectAsState()
+    val selectedAudioMode by ScreenShareSessionManager.senderAudioMode.collectAsState()
 
     val mediaProjectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -1555,7 +1565,7 @@ private fun SenderScreenTab(context: Context) {
                 action = ScreenShareService.ACTION_START_SHARE
                 putExtra(ScreenShareService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(ScreenShareService.EXTRA_RESULT_DATA, result.data)
-                putExtra(ScreenShareService.EXTRA_ROOM_CODE, roomCode)
+                putExtra(ScreenShareService.EXTRA_ROOM_CODE, activeRoomCode)
                 putExtra(ScreenShareService.EXTRA_AUDIO_MODE, selectedAudioMode)
             }
             ContextCompat.startForegroundService(context, serviceIntent)
@@ -1607,7 +1617,7 @@ private fun SenderScreenTab(context: Context) {
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = roomCode,
+                            text = activeRoomCode,
                             color = Color(0xFFFFFFFF),
                             fontWeight = FontWeight.Black,
                             fontSize = 34.sp,
@@ -1616,7 +1626,7 @@ private fun SenderScreenTab(context: Context) {
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         IconButton(
-                            onClick = { roomCode = (100000..999999).random().toString() },
+                            onClick = { ScreenShareSessionManager.regenerateSenderRoomCode() },
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
@@ -1684,7 +1694,7 @@ private fun SenderScreenTab(context: Context) {
                                         RoundedCornerShape(10.dp)
                                     )
                                     .jellyElastic(baseCornerRadius = 10.dp)
-                                    .clickable { selectedAudioMode = mode }
+                                    .clickable { ScreenShareSessionManager.setSenderAudioMode(mode) }
                                     .padding(vertical = 10.dp, horizontal = 4.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -1724,7 +1734,7 @@ private fun SenderScreenTab(context: Context) {
                         text = "1. Click 'Start Screen Sharing' below and approve Android's screen & audio capture prompt.\n" +
                                "2. Video and audio are encrypted on-device with AES-256-GCM using your Room Code key before transmission.\n" +
                                "3. Topic name is SHA-256 hashed on the broker; only the viewer with your exact code can decrypt.\n" +
-                               "4. Broadcast automatically stops after 15 minutes of testing or when you click Stop.",
+                               "4. Broadcast runs 24/7 persistently in the background until you explicitly tap 'Stop Screen Sharing'.",
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
                         lineHeight = 18.sp
@@ -1807,7 +1817,7 @@ private fun SenderScreenTab(context: Context) {
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Text(
-                        text = "ROOM #${activeRoomCode ?: roomCode}",
+                        text = "ROOM #$activeRoomCode",
                         color = Color(0xFFFFFFFF),
                         fontWeight = FontWeight.Black,
                         fontSize = 28.sp,
@@ -1886,22 +1896,24 @@ private fun SenderScreenTab(context: Context) {
 
 @Composable
 private fun ViewerScreenTab() {
-    val viewerEngine = remember { ScreenViewerEngine() }
+    val context = LocalContext.current
 
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose {
-            viewerEngine.disconnect()
+    val isConnected by ScreenShareSessionManager.isViewerConnected.collectAsState()
+    val viewerRoomCode by ScreenShareSessionManager.viewerRoomCode.collectAsState()
+    val viewerFrame by ScreenShareSessionManager.viewerFrame.collectAsState()
+    val statusMessage by ScreenShareSessionManager.viewerStatus.collectAsState()
+    val framesReceived by ScreenShareSessionManager.viewerFramesReceived.collectAsState()
+    val isAudioMuted by ScreenShareSessionManager.isViewerAudioMuted.collectAsState()
+
+    var inputRoomCode by rememberSaveable { mutableStateOf(if (viewerRoomCode.isNotEmpty()) viewerRoomCode else "") }
+
+    LaunchedEffect(viewerRoomCode) {
+        if (viewerRoomCode.isNotEmpty()) {
+            inputRoomCode = viewerRoomCode
         }
     }
 
-    val isConnected by viewerEngine.isConnected.collectAsState()
-    val isConnecting by viewerEngine.isConnecting.collectAsState()
-    val currentFrame by viewerEngine.currentFrame.collectAsState()
-    val framesReceived by viewerEngine.framesReceived.collectAsState()
-    val statusMessage by viewerEngine.statusMessage.collectAsState()
-    val isAudioMuted by viewerEngine.isAudioMuted.collectAsState()
-
-    var inputRoomCode by rememberSaveable { mutableStateOf("") }
+    val isConnecting = !isConnected && statusMessage.contains("Connecting", true)
 
     Column(
         modifier = Modifier
@@ -1981,7 +1993,7 @@ private fun ViewerScreenTab() {
 
                     Text(
                         text = statusMessage,
-                        color = if (statusMessage.contains("failed", true)) Color(0xFFFF2E54) else Color(0xFF8A99AD),
+                        color = if (statusMessage.contains("failed", true) || statusMessage.contains("error", true)) Color(0xFFFF2E54) else Color(0xFF8A99AD),
                         fontSize = 11.sp,
                         textAlign = TextAlign.Center
                     )
@@ -1992,7 +2004,7 @@ private fun ViewerScreenTab() {
 
             Button(
                 onClick = {
-                    viewerEngine.connect(inputRoomCode)
+                    ScreenShareSessionManager.connectViewerPersistent(context, inputRoomCode)
                 },
                 enabled = inputRoomCode.length == 6 && !isConnecting,
                 modifier = Modifier
@@ -2035,6 +2047,7 @@ private fun ViewerScreenTab() {
             }
         } else {
             // Connected: Live Video Feed Display
+            val activeCode = viewerRoomCode.ifEmpty { inputRoomCode }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2058,7 +2071,7 @@ private fun ViewerScreenTab() {
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "🔒 E2EE LIVE • ROOM #$inputRoomCode",
+                                    text = "🔒 E2EE LIVE • ROOM #$activeCode",
                                     color = Color(0xFFFFFFFF),
                                     fontWeight = FontWeight.Black,
                                     fontSize = 12.sp,
@@ -2079,7 +2092,7 @@ private fun ViewerScreenTab() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             OutlinedButton(
-                                onClick = { viewerEngine.toggleAudioMute() },
+                                onClick = { ScreenShareSessionManager.toggleViewerMute() },
                                 modifier = Modifier
                                     .height(34.dp)
                                     .jellyElastic(baseCornerRadius = 10.dp),
@@ -2098,7 +2111,7 @@ private fun ViewerScreenTab() {
                             }
 
                             OutlinedButton(
-                                onClick = { viewerEngine.disconnect() },
+                                onClick = { ScreenShareSessionManager.disconnectViewerExplicitly() },
                                 modifier = Modifier
                                     .height(34.dp)
                                     .jellyElastic(baseCornerRadius = 10.dp),
@@ -2110,7 +2123,7 @@ private fun ViewerScreenTab() {
                                 contentPadding = PaddingValues(horizontal = 8.dp)
                             ) {
                                 Text(
-                                    text = "Disconnect",
+                                    text = "❌ Disconnect",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp
                                 )
@@ -2130,9 +2143,10 @@ private fun ViewerScreenTab() {
                             .border(1.dp, Color(0xFF1B2433), RoundedCornerShape(12.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (currentFrame != null) {
+                        val currentBmp = viewerFrame
+                        if (currentBmp != null) {
                             Image(
-                                bitmap = currentFrame!!,
+                                bitmap = currentBmp.asImageBitmap(),
                                 contentDescription = "Remote Screen Stream",
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -2159,7 +2173,7 @@ private fun ViewerScreenTab() {
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Make sure the sender on Room #$inputRoomCode has started sharing.",
+                                    text = "Make sure the sender on Room #$activeCode has started sharing.",
                                     color = Color(0xFF8A99AD),
                                     fontSize = 11.sp,
                                     textAlign = TextAlign.Center

@@ -23,10 +23,12 @@ import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -43,6 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Streams encrypted 320x568 JPEG video (~10 FPS lock-free drop-frame buffer)
  * and 12,000 Hz 16-bit PCM audio (Internal, Mic, or Both) over dual parallel MQTT sockets
  * with AES-256-GCM End-to-End Encryption.
+ * Runs 100% persistently in the background until the user explicitly stops sharing.
  */
 class ScreenShareService : Service() {
 
@@ -59,22 +62,18 @@ class ScreenShareService : Service() {
     private var relayClient: ScreenRelayClient? = null
     private var currentRoomCode: String = ""
     private var audioMode: String = AUDIO_MODE_BOTH
-    private var sessionStartTimeMs: Long = 0L
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private var isStreamingActive = false
     private val isCapturingFrame = AtomicBoolean(false)
+    private var lastCapturedJpegBytes: ByteArray? = null
+    private var lastSentTimeMs: Long = 0L
 
     private val captureRunnable = object : Runnable {
         override fun run() {
             if (!isStreamingActive) return
-
-            // Auto-stop after 15 minutes of testing
-            if (System.currentTimeMillis() - sessionStartTimeMs > MAX_SHARE_DURATION_MS) {
-                Log.i("ScreenShareService", "15-minute screen share session expired. Auto-stopping.")
-                stopScreenCaptureService()
-                return
-            }
-
             captureAndPublishFrame()
             backgroundHandler?.postDelayed(this, 100L) // Smooth ~10 FPS screen capture
         }
@@ -88,7 +87,7 @@ class ScreenShareService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) return START_NOT_STICKY
+        if (intent == null) return if (isStreamingActive) START_STICKY else START_NOT_STICKY
 
         val action = intent.action
         if (action == ACTION_STOP_SHARE) {
@@ -114,13 +113,64 @@ class ScreenShareService : Service() {
 
             this.currentRoomCode = roomCode
             this.audioMode = mode
-            this.sessionStartTimeMs = System.currentTimeMillis()
 
+            acquireWakeAndWifiLocks()
             startForegroundWithNotification(roomCode)
             startScreenAndAudioCapture(resultCode, resultData, roomCode)
+            return START_STICKY
         }
 
-        return START_NOT_STICKY
+        return if (isStreamingActive) START_STICKY else START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // DO NOT stop sharing when the user swipes the app away from Recents!
+        // Sharing must continue running until the user explicitly clicks "Unshare / Stop Sharing".
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun acquireWakeAndWifiLocks() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && wakeLock == null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IronDiscipline:SenderCpuLock").apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire()
+            }
+
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm != null && wifiLock == null) {
+                @Suppress("DEPRECATION")
+                val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm.createWifiLock(lockMode, "IronDiscipline:SenderWifiLock").apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wifiLock?.isHeld == false) {
+                wifiLock?.acquire()
+            }
+        } catch (e: Exception) {
+            Log.e("ScreenShareService", "Failed to acquire wake/wifi locks: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeAndWifiLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Exception) {}
+        wakeLock = null
+
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Exception) {}
+        wifiLock = null
     }
 
     private fun startForegroundWithNotification(roomCode: String) {
@@ -131,6 +181,16 @@ class ScreenShareService : Service() {
             this,
             0,
             openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val stopIntent = Intent(this, ScreenShareService::class.java).apply {
+            action = ACTION_STOP_SHARE
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -147,6 +207,7 @@ class ScreenShareService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(R.drawable.ic_launcher_foreground, "Stop Sharing", stopPendingIntent)
             .build()
 
         val hasAudioPermission = ContextCompat.checkSelfPermission(
@@ -222,6 +283,7 @@ class ScreenShareService : Service() {
             this.isStreamingActive = true
             client.startSender()
 
+            ScreenShareSessionManager.setSenderActive(true, roomCode, "Streaming Live • Audio: $audioMode")
             ScreenShareState.updateState(true, roomCode, "Streaming Live • Audio: $audioMode")
 
             // Start video capture loop (~10 FPS lock-free Latest-Frame-Only buffer)
@@ -385,6 +447,15 @@ class ScreenShareService : Service() {
         try {
             val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
             if (image == null) {
+                // Heartbeat: Sender screen is locked/off or static - keep viewer connection alive
+                val now = System.currentTimeMillis()
+                val cached = lastCapturedJpegBytes
+                if (cached != null && now - lastSentTimeMs >= 400L) {
+                    client.enqueueVideoFrame(cached)
+                    lastSentTimeMs = now
+                    ScreenShareSessionManager.incrementSenderFrames()
+                    ScreenShareState.incrementFrames()
+                }
                 isCapturingFrame.set(false)
                 return
             }
@@ -415,8 +486,12 @@ class ScreenShareService : Service() {
                 frameBitmap.compress(Bitmap.CompressFormat.JPEG, 38, baos)
                 val jpegBytes = baos.toByteArray()
 
+                lastCapturedJpegBytes = jpegBytes
+                lastSentTimeMs = System.currentTimeMillis()
+
                 // Non-blocking lock-free enqueue to dedicated Video TCP socket thread
                 client.enqueueVideoFrame(jpegBytes)
+                ScreenShareSessionManager.incrementSenderFrames()
                 ScreenShareState.incrementFrames()
 
                 if (frameBitmap !== fullBitmap) {
@@ -434,7 +509,9 @@ class ScreenShareService : Service() {
     }
 
     private fun stopScreenCaptureService() {
+        if (!isStreamingActive && relayClient == null) return
         isStreamingActive = false
+        releaseWakeAndWifiLocks()
         backgroundHandler?.removeCallbacksAndMessages(null)
 
         audioThread?.interrupt()
@@ -472,6 +549,7 @@ class ScreenShareService : Service() {
         try { relayClient?.stop() } catch (_: Exception) {}
         relayClient = null
 
+        ScreenShareSessionManager.setSenderActive(false, status = "Stopped")
         ScreenShareState.updateState(false, null, "Stopped")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -517,8 +595,6 @@ class ScreenShareService : Service() {
         const val AUDIO_MODE_INTERNAL = "INTERNAL"
         const val AUDIO_MODE_MIC = "MIC"
         const val AUDIO_MODE_BOTH = "BOTH"
-
-        const val MAX_SHARE_DURATION_MS = 15 * 60 * 1000L // 15-minute safety timeout
 
         fun stopSharing(context: Context) {
             val intent = Intent(context, ScreenShareService::class.java).apply {
