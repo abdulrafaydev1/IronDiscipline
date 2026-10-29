@@ -2,14 +2,23 @@ package com.irondiscipline.app.service
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
 import com.irondiscipline.app.screenshare.ScreenRelayClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
@@ -18,7 +27,9 @@ data class RemotePhoneSession(
     val phoneName: String = "Connecting (#$roomCode)...",
     val latestFrame: Bitmap? = null,
     val status: String = "Connecting...",
-    val isAudioMuted: Boolean = false
+    val isAudioMuted: Boolean = false,
+    val isStreamAvailable: Boolean = true,
+    val lastFrameTimeMs: Long = 0L
 )
 
 /**
@@ -27,6 +38,10 @@ data class RemotePhoneSession(
  * Connects to multiple Sender phones simultaneously, each in its own dedicated named tab.
  */
 object ScreenShareSessionManager {
+
+    private val managerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var isNetworkMonitoringRegistered = false
 
     // --- SENDER GLOBAL STATE ---
     private val _isSenderActive = MutableStateFlow(false)
@@ -59,6 +74,25 @@ object ScreenShareSessionManager {
     private var viewerWakeLock: PowerManager.WakeLock? = null
     private var viewerWifiLock: WifiManager.WifiLock? = null
 
+    init {
+        // Continuous Watchdog: If no frames received for > 3000ms, mark stream offline
+        managerScope.launch {
+            while (true) {
+                delay(750)
+                val now = System.currentTimeMillis()
+                _viewerSessions.update { list ->
+                    list.map { session ->
+                        if (session.isStreamAvailable && session.lastFrameTimeMs > 0L && (now - session.lastFrameTimeMs > 3000L)) {
+                            session.copy(isStreamAvailable = false, status = "🔴 Stream Offline")
+                        } else {
+                            session
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun generateRoomCode(): String = Random.nextInt(100000, 999999).toString()
 
     fun regenerateSenderRoomCode() {
@@ -84,6 +118,34 @@ object ScreenShareSessionManager {
         _senderFramesSent.value += 1
     }
 
+    fun startNetworkMonitoring(context: Context) {
+        if (isNetworkMonitoringRegistered) return
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                // Internet restored! Immediately trigger reconnect on all clients
+                activeClients.values.forEach { it.triggerImmediateReconnect() }
+            }
+
+            override fun onLost(network: Network) {
+                // Internet lost! Immediately mark all sessions stream unavailable
+                _viewerSessions.update { list ->
+                    list.map { it.copy(isStreamAvailable = false, status = "🔴 Disconnected") }
+                }
+            }
+        }
+
+        try {
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+            isNetworkMonitoringRegistered = true
+        } catch (_: Exception) {}
+    }
+
     /**
      * Connects to a new Sender phone by its 6-digit roomCode and adds a new Tab for it
      * without disconnecting existing phone tabs!
@@ -100,13 +162,16 @@ object ScreenShareSessionManager {
         }
 
         acquireViewerLocks(context.applicationContext)
+        startNetworkMonitoring(context.applicationContext)
 
         val initialSession = RemotePhoneSession(
             roomCode = code,
             phoneName = "Phone #$code",
             latestFrame = null,
             status = "Connecting...",
-            isAudioMuted = false
+            isAudioMuted = false,
+            isStreamAvailable = true,
+            lastFrameTimeMs = System.currentTimeMillis()
         )
         _viewerSessions.update { current -> current + initialSession }
         _selectedTabRoomCode.value = code
@@ -118,13 +183,16 @@ object ScreenShareSessionManager {
 
         client.startViewer(
             onFrameDecoded = { detectedPhoneName, bmp ->
+                val now = System.currentTimeMillis()
                 _viewerSessions.update { list ->
                     list.map { item ->
                         if (item.roomCode == code) {
                             item.copy(
                                 phoneName = detectedPhoneName.ifBlank { item.phoneName },
                                 latestFrame = bmp,
-                                status = "🟢 LIVE"
+                                status = "🟢 LIVE",
+                                isStreamAvailable = true,
+                                lastFrameTimeMs = now
                             )
                         } else item
                     }
@@ -133,7 +201,13 @@ object ScreenShareSessionManager {
             onStatusChanged = { newStatus ->
                 _viewerSessions.update { list ->
                     list.map { item ->
-                        if (item.roomCode == code) item.copy(status = newStatus) else item
+                        if (item.roomCode == code) {
+                            val isLive = newStatus.contains("LIVE", true)
+                            item.copy(
+                                status = newStatus,
+                                isStreamAvailable = if (isLive) true else if (newStatus.contains("Reconnecting", true) || newStatus.contains("Connecting", true)) false else item.isStreamAvailable
+                            )
+                        } else item
                     }
                 }
             }

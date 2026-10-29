@@ -23,6 +23,10 @@ import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -67,6 +71,7 @@ class ScreenShareService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var isStreamingActive = false
     private val isCapturingFrame = AtomicBoolean(false)
@@ -295,6 +300,9 @@ class ScreenShareService : Service() {
 
             // Start real-time audio capture loop
             startAudioCaptureLoop(projection)
+
+            // Register network change listener for auto-reconnect on Internet restore
+            registerNetworkMonitoring()
         }
     }
 
@@ -560,6 +568,8 @@ class ScreenShareService : Service() {
         backgroundThread = null
         backgroundHandler = null
 
+        unregisterNetworkMonitoring()
+
         try { relayClient?.stop() } catch (_: Exception) {}
         relayClient = null
 
@@ -573,6 +583,35 @@ class ScreenShareService : Service() {
             stopForeground(true)
         }
         stopSelf()
+    }
+
+    private fun registerNetworkMonitoring() {
+        if (networkCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                relayClient?.triggerImmediateReconnect()
+                ScreenShareSessionManager.setSenderActive(true, currentRoomCode, "Streaming Live • Audio: $audioMode")
+            }
+            override fun onLost(network: Network) {
+                ScreenShareSessionManager.setSenderActive(true, currentRoomCode, "🔴 Offline: Internet / Data Disconnected")
+            }
+        }
+        try {
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+        } catch (_: Exception) {}
+    }
+
+    private fun unregisterNetworkMonitoring() {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
+        networkCallback = null
     }
 
     override fun onDestroy() {

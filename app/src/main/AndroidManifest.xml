@@ -15,6 +15,7 @@
 
     <!-- Internet access for live screen share socket relay -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Foreground Service to ensure 24/7 persistence of the monitoring engine -->

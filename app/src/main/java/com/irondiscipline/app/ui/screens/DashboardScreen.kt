@@ -2205,15 +2205,17 @@ private fun ViewerScreenTab() {
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val statusDot = if (session.isStreamAvailable) "🟢" else "🔴"
+                            val dotColor = if (session.isStreamAvailable) Color(0xFF00E676) else Color(0xFFFF2E54)
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(if (session.status.contains("LIVE", true)) Color(0xFF00E676) else Color(0xFF38BDF8))
+                                    .background(dotColor)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "📱 ${session.phoneName} (#${session.roomCode})",
+                                text = "$statusDot 📱 ${session.phoneName}",
                                 color = if (isSelected) Color(0xFFFFFFFF) else Color(0xFF8A99AD),
                                 fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
                                 fontSize = 12.sp,
@@ -2266,11 +2268,11 @@ private fun ViewerScreenTab() {
                                     modifier = Modifier
                                         .size(8.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0xFFFF2E54))
+                                        .background(if (activeSession.isStreamAvailable) Color(0xFF00E676) else Color(0xFFFF2E54))
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "📱 ${activeSession.phoneName}",
+                                    text = "${if (activeSession.isStreamAvailable) "🟢" else "🔴"} 📱 ${activeSession.phoneName}",
                                     color = Color(0xFFFFFFFF),
                                     fontWeight = FontWeight.Black,
                                     fontSize = 12.sp,
@@ -2279,8 +2281,8 @@ private fun ViewerScreenTab() {
                                 )
                             }
                             Text(
-                                text = "AES-256-GCM Encrypted • ${activeSession.status}",
-                                color = if (activeSession.status.contains("LIVE", true)) Color(0xFF00E676) else Color(0xFF38BDF8),
+                                text = if (activeSession.isStreamAvailable) "AES-256-GCM Encrypted • ${activeSession.status}" else "🔴 Stream Offline • Waiting for Internet / Reconnect...",
+                                color = if (activeSession.isStreamAvailable) Color(0xFF00E676) else Color(0xFFFF2E54),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
@@ -2343,17 +2345,58 @@ private fun ViewerScreenTab() {
                             .border(1.dp, Color(0xFF1B2433), RoundedCornerShape(12.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        val currentBmp = activeSession.latestFrame
-                        if (currentBmp != null) {
+                        if (activeSession.isStreamAvailable && activeSession.latestFrame != null) {
                             Image(
-                                bitmap = currentBmp.asImageBitmap(),
+                                bitmap = activeSession.latestFrame.asImageBitmap(),
                                 contentDescription = "Remote Screen Stream for ${activeSession.phoneName}",
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .clip(RoundedCornerShape(12.dp)),
                                 contentScale = ContentScale.Fit
                             )
+                        } else if (!activeSession.isStreamAvailable) {
+                            // Obsidian Dark-Luxury Offline Card (#141B29 card with a glowing Crimson/Amber border #FF2E54)
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                shape = RoundedCornerShape(18.dp),
+                                border = BorderStroke(1.5.dp, Color(0xFFFF2E54)),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF141B29))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp, vertical = 28.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = "📡❌",
+                                        fontSize = 42.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        text = "Screen is not available because internet/data is turn off",
+                                        color = Color(0xFFFFFFFF),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 18.sp,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 24.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = "Jaise hi internet/data dobara connect hoga, live screen khud-ba-khud wapas visible ho jayegi...",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
                         } else {
+                            // Initial State: Waiting for first frames while stream connects
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center,

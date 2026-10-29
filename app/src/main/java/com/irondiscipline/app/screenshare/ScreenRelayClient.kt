@@ -39,6 +39,11 @@ class ScreenRelayClient(private val roomCode: String) {
     private var audioSocket: Socket? = null
     private var viewerAudioTrack: AudioTrack? = null
 
+    private var videoSenderThread: Thread? = null
+    private var audioSenderThread: Thread? = null
+    private var videoRecvThread: Thread? = null
+    private var audioRecvThread: Thread? = null
+
     companion object {
         private const val BROKER_HOST = "broker.emqx.io"
         private const val BROKER_PORT = 1883
@@ -78,7 +83,7 @@ class ScreenRelayClient(private val roomCode: String) {
         if (isRunning.getAndSet(true)) return
 
         // 1. Dedicated Video Sender Thread
-        Thread {
+        videoSenderThread = Thread {
             while (isRunning.get()) {
                 var activeSock: Socket? = null
                 try {
@@ -96,7 +101,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         if (frame != null) {
                             sendMqttPublish(out, videoTopic, frame)
                         } else {
-                            Thread.sleep(12)
+                            try { Thread.sleep(12) } catch (_: Exception) {}
                         }
                         if (System.currentTimeMillis() - lastPing > 15000L) {
                             sendMqttPing(out)
@@ -104,7 +109,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    Thread.sleep(600)
+                    try { Thread.sleep(350) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }
@@ -112,7 +117,7 @@ class ScreenRelayClient(private val roomCode: String) {
         }.apply { isDaemon = true; name = "SenderVideoSocketThread"; start() }
 
         // 2. Dedicated Audio Sender Thread (Never blocked by video frames!)
-        Thread {
+        audioSenderThread = Thread {
             while (isRunning.get()) {
                 var activeSock: Socket? = null
                 try {
@@ -136,7 +141,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    Thread.sleep(600)
+                    try { Thread.sleep(350) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }
@@ -158,7 +163,7 @@ class ScreenRelayClient(private val roomCode: String) {
         startViewerAudioPlaybackThread()
 
         // 2. Start Dedicated Video Receiver Thread
-        Thread {
+        videoRecvThread = Thread {
             while (isRunning.get()) {
                 var activeSock: Socket? = null
                 try {
@@ -214,7 +219,7 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {
                     if (isRunning.get()) {
                         onStatusChanged("Reconnecting...")
-                        Thread.sleep(600)
+                        try { Thread.sleep(350) } catch (_: Exception) {}
                     }
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
@@ -223,7 +228,7 @@ class ScreenRelayClient(private val roomCode: String) {
         }.apply { isDaemon = true; name = "ViewerVideoRecvThread"; start() }
 
         // 3. Start Dedicated Audio Receiver Thread
-        Thread {
+        audioRecvThread = Thread {
             while (isRunning.get()) {
                 var activeSock: Socket? = null
                 try {
@@ -258,7 +263,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    Thread.sleep(600)
+                    try { Thread.sleep(350) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }
@@ -328,6 +333,20 @@ class ScreenRelayClient(private val roomCode: String) {
         )
     }
 
+    /**
+     * Wakes up and immediately triggers reconnection for active sockets/threads.
+     * Called when Internet/Data connectivity is restored so all streams resume within 1 second!
+     */
+    fun triggerImmediateReconnect() {
+        if (!isRunning.get()) return
+        try { videoSocket?.close() } catch (_: Exception) {}
+        try { audioSocket?.close() } catch (_: Exception) {}
+        try { videoRecvThread?.interrupt() } catch (_: Exception) {}
+        try { audioRecvThread?.interrupt() } catch (_: Exception) {}
+        try { videoSenderThread?.interrupt() } catch (_: Exception) {}
+        try { audioSenderThread?.interrupt() } catch (_: Exception) {}
+    }
+
     fun stop() {
         isRunning.set(false)
         latestEncryptedVideoFrame.set(null)
@@ -335,6 +354,10 @@ class ScreenRelayClient(private val roomCode: String) {
         incomingAudioPlayQueue.clear()
         try { videoSocket?.close() } catch (_: Exception) {}
         try { audioSocket?.close() } catch (_: Exception) {}
+        try { videoRecvThread?.interrupt() } catch (_: Exception) {}
+        try { audioRecvThread?.interrupt() } catch (_: Exception) {}
+        try { videoSenderThread?.interrupt() } catch (_: Exception) {}
+        try { audioSenderThread?.interrupt() } catch (_: Exception) {}
         try {
             viewerAudioTrack?.stop()
             viewerAudioTrack?.release()
@@ -348,8 +371,8 @@ class ScreenRelayClient(private val roomCode: String) {
             keepAlive = true
             sendBufferSize = 65536
             receiveBufferSize = 65536
-            soTimeout = 25000
-            connect(InetSocketAddress(BROKER_HOST, BROKER_PORT), 8000)
+            soTimeout = 10000 // 10s socket timeout detects dead connection promptly
+            connect(InetSocketAddress(BROKER_HOST, BROKER_PORT), 5000)
         }
     }
 
