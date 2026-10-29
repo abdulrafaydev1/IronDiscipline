@@ -55,7 +55,7 @@ class ScreenViewerEngine {
         this.relayClient = client
 
         client.startViewer(
-            onFrameDecoded = { bmp ->
+            onFrameDecoded = { _: String, bmp: Bitmap ->
                 _currentFrame.value = bmp.asImageBitmap()
                 _framesReceived.value += 1
                 _isConnected.value = true

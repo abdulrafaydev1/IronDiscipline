@@ -319,11 +319,11 @@ class ScreenRelayClient(private val roomCode: String) {
      * Backward-compatible overload for single-bitmap consumer.
      */
     fun startViewer(
-        onFrameDecodedLegacy: (Bitmap) -> Unit,
+        onFrameDecoded: (Bitmap) -> Unit,
         onStatusChanged: (String) -> Unit
     ) {
         startViewer(
-            onFrameDecoded = { _, bmp -> onFrameDecodedLegacy(bmp) },
+            onFrameDecoded = { _: String, bmp: Bitmap -> onFrameDecoded(bmp) },
             onStatusChanged = onStatusChanged
         )
     }
