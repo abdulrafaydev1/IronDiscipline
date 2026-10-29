@@ -19,7 +19,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -48,7 +47,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -72,7 +70,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.irondiscipline.app.BuildConfig
 import com.irondiscipline.app.ui.components.jellyElastic
 import com.irondiscipline.app.ui.theme.IronDisciplineTheme
 import java.text.SimpleDateFormat
@@ -120,9 +117,6 @@ class AlarmRingingActivity : ComponentActivity() {
                     alarm = alarm,
                     onDismissCompleted = {
                         completeAlarmAndDismiss(activeAlarmId, "MATH_SOLVED")
-                    },
-                    onDevTestDismiss = {
-                        completeAlarmAndDismiss(activeAlarmId, "TEST_DISMISS")
                     }
                 )
             }
@@ -312,8 +306,7 @@ class AlarmRingingActivity : ComponentActivity() {
 @Composable
 fun AlarmRingingScreen(
     alarm: AlarmItem?,
-    onDismissCompleted: () -> Unit,
-    onDevTestDismiss: () -> Unit
+    onDismissCompleted: () -> Unit
 ) {
     val context = LocalContext.current
     var currentTimeString by remember { mutableStateOf(getFormattedCurrentTime(context)) }
@@ -323,14 +316,6 @@ fun AlarmRingingScreen(
             currentTimeString = getFormattedCurrentTime(context)
             kotlinx.coroutines.delay(1000L)
         }
-    }
-
-    // Dev test dismiss condition
-    val isTestOrDebugMode = remember {
-        val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
-        BuildConfig.DEBUG ||
-            prefs.getBoolean("is_test_mode", false) ||
-            prefs.getBoolean("enable_dev_test_dismiss", true)
     }
 
     // Read persistent math questions and solved count from ActiveAlarmSessionState
@@ -581,27 +566,6 @@ fun AlarmRingingScreen(
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
                         letterSpacing = 0.5.sp
-                    )
-                }
-            }
-
-            // Developer / Debug Test Dismiss Button
-            if (isTestOrDebugMode) {
-                Spacer(modifier = Modifier.height(14.dp))
-                OutlinedButton(
-                    onClick = onDevTestDismiss,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .jellyElastic(baseCornerRadius = 14.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFFFF9100)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9100))
-                ) {
-                    Text(
-                        text = "🛠️ TEST DISMISS (Stop Alarm Immediately)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
                     )
                 }
             }
