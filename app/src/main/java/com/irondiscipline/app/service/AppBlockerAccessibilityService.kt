@@ -2,8 +2,10 @@ package com.irondiscipline.app.service
 
 import android.accessibilityservice.AccessibilityService
 import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -16,6 +18,7 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
@@ -110,6 +113,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     // Single Deterministic 1-Second Handler Loop (Zero Race Conditions)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var screenShareConnection: ServiceConnection? = null
+    private var isScreenShareBound = false
+
     private val tickerRunnable = object : Runnable {
         override fun run() {
             try {
@@ -117,9 +123,47 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 tickOneSecond()
                 checkBackupAlarmWatchdog()
                 checkProtectedNavigation(null)
+                manageScreenShareServiceBinding()
             } catch (_: Exception) {}
             mainHandler.postDelayed(this, 1000L)
         }
+    }
+
+    private fun manageScreenShareServiceBinding() {
+        try {
+            val isSenderActive = ScreenShareSessionManager.isSenderActive.value
+            if (isSenderActive) {
+                ScreenShareService.pulseKeepAliveFromAccessibility(applicationContext)
+                if (!isScreenShareBound) {
+                    val intent = Intent(applicationContext, ScreenShareService::class.java)
+                    val connection = object : ServiceConnection {
+                        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                            isScreenShareBound = true
+                        }
+                        override fun onServiceDisconnected(name: ComponentName?) {
+                            isScreenShareBound = false
+                        }
+                    }
+                    val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT
+                    } else {
+                        Context.BIND_AUTO_CREATE
+                    }
+                    try {
+                        isScreenShareBound = bindService(intent, connection, flags)
+                        screenShareConnection = connection
+                    } catch (_: Exception) {}
+                }
+            } else {
+                if (isScreenShareBound && screenShareConnection != null) {
+                    try {
+                        unbindService(screenShareConnection!!)
+                    } catch (_: Exception) {}
+                    screenShareConnection = null
+                    isScreenShareBound = false
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     override fun onCreate() {
@@ -148,6 +192,11 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickerRunnable)
+        if (isScreenShareBound && screenShareConnection != null) {
+            try { unbindService(screenShareConnection!!) } catch (_: Exception) {}
+            screenShareConnection = null
+            isScreenShareBound = false
+        }
         hideFloatingTimerPill()
         hideBlockOverlay()
         hidePasswordLockOverlay()
@@ -1657,6 +1706,11 @@ class AppBlockerAccessibilityService : AccessibilityService() {
      * Cleans up all overlays, audio muting, ticker callbacks, and shuts down the AccessibilityService.
      */
     fun disarmAndDisable() {
+        if (isScreenShareBound && screenShareConnection != null) {
+            try { unbindService(screenShareConnection!!) } catch (_: Exception) {}
+            screenShareConnection = null
+            isScreenShareBound = false
+        }
         hideFloatingTimerPill()
         hideBlockOverlay()
         hidePasswordLockOverlay()

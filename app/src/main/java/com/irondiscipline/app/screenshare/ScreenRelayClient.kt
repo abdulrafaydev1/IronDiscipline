@@ -109,7 +109,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    try { Thread.sleep(350) } catch (_: Exception) {}
+                    try { Thread.sleep(250) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }
@@ -141,7 +141,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    try { Thread.sleep(350) } catch (_: Exception) {}
+                    try { Thread.sleep(250) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }
@@ -155,7 +155,8 @@ class ScreenRelayClient(private val roomCode: String) {
      */
     fun startViewer(
         onFrameDecoded: (deviceName: String, bitmap: Bitmap) -> Unit,
-        onStatusChanged: (String) -> Unit
+        onStatusChanged: (String) -> Unit,
+        onPacketHeartbeat: () -> Unit = {}
     ) {
         if (isRunning.getAndSet(true)) return
 
@@ -187,6 +188,7 @@ class ScreenRelayClient(private val roomCode: String) {
                             if (payload != null) {
                                 val decryptedPayload = StreamCryptoEngine.decryptPacket(payload, sessionKey)
                                 if (decryptedPayload != null && decryptedPayload.size > 10) {
+                                    onPacketHeartbeat()
                                     val hasHeader = decryptedPayload[0] == 'I'.code.toByte() &&
                                                     decryptedPayload[1] == 'D'.code.toByte() &&
                                                     decryptedPayload[2] == 'M'.code.toByte() &&
@@ -219,7 +221,7 @@ class ScreenRelayClient(private val roomCode: String) {
                 } catch (_: Exception) {
                     if (isRunning.get()) {
                         onStatusChanged("Reconnecting...")
-                        try { Thread.sleep(350) } catch (_: Exception) {}
+                        try { Thread.sleep(250) } catch (_: Exception) {}
                     }
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
@@ -250,6 +252,7 @@ class ScreenRelayClient(private val roomCode: String) {
                             if (payload != null && !isViewerAudioMuted.get()) {
                                 val decryptedPcm = StreamCryptoEngine.decryptPacket(payload, sessionKey)
                                 if (decryptedPcm != null && decryptedPcm.isNotEmpty()) {
+                                    onPacketHeartbeat()
                                     if (!incomingAudioPlayQueue.offer(decryptedPcm)) {
                                         incomingAudioPlayQueue.poll()
                                         incomingAudioPlayQueue.offer(decryptedPcm)
@@ -263,7 +266,7 @@ class ScreenRelayClient(private val roomCode: String) {
                         }
                     }
                 } catch (_: Exception) {
-                    try { Thread.sleep(350) } catch (_: Exception) {}
+                    try { Thread.sleep(250) } catch (_: Exception) {}
                 } finally {
                     try { activeSock?.close() } catch (_: Exception) {}
                 }

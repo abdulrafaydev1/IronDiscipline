@@ -74,22 +74,52 @@ object ScreenShareSessionManager {
     private var viewerWakeLock: PowerManager.WakeLock? = null
     private var viewerWifiLock: WifiManager.WifiLock? = null
 
+    @Volatile
+    private var appContext: Context? = null
+    private const val FRAME_TIMEOUT_MS = 9500L
+
     init {
-        // Continuous Watchdog: If no frames received for > 3000ms, mark stream offline
+        // Continuous Watchdog: 1-second loop protecting against false-positive offline states
         managerScope.launch {
             while (true) {
-                delay(750)
+                delay(1000L)
                 val now = System.currentTimeMillis()
+                val ctx = appContext
+                val viewerInternetOn = if (ctx != null) isInternetAvailable(ctx) else true
+
                 _viewerSessions.update { list ->
                     list.map { session ->
-                        if (session.isStreamAvailable && session.lastFrameTimeMs > 0L && (now - session.lastFrameTimeMs > 3000L)) {
-                            session.copy(isStreamAvailable = false, status = "🔴 Stream Offline")
+                        if (!viewerInternetOn) {
+                            // If the Viewer phone's own internet is OFF:
+                            session.copy(isStreamAvailable = false, status = "🔴 Disconnected")
                         } else {
-                            session
+                            // Viewer phone's internet is ON:
+                            val elapsed = if (session.lastFrameTimeMs > 0L) now - session.lastFrameTimeMs else 0L
+                            if (elapsed in 4000L..FRAME_TIMEOUT_MS) {
+                                // Between 4.0s and 9.5s: keep live screen visible, heal transient network handover!
+                                activeClients[session.roomCode]?.triggerImmediateReconnect()
+                                session
+                            } else if (session.isStreamAvailable && session.lastFrameTimeMs > 0L && elapsed > FRAME_TIMEOUT_MS) {
+                                // Over 9.5s of zero video AND audio/keep-alive packets -> Sender internet genuinely OFF
+                                session.copy(isStreamAvailable = false, status = "🔴 Stream Offline")
+                            } else {
+                                session
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+
+    private fun isInternetAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val activeNetwork = cm?.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
         }
     }
 
@@ -119,6 +149,7 @@ object ScreenShareSessionManager {
     }
 
     fun startNetworkMonitoring(context: Context) {
+        appContext = context.applicationContext
         if (isNetworkMonitoringRegistered) return
         val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val request = NetworkRequest.Builder()
@@ -161,6 +192,7 @@ object ScreenShareSessionManager {
             return
         }
 
+        appContext = context.applicationContext
         acquireViewerLocks(context.applicationContext)
         startNetworkMonitoring(context.applicationContext)
 
@@ -205,7 +237,21 @@ object ScreenShareSessionManager {
                             val isLive = newStatus.contains("LIVE", true)
                             item.copy(
                                 status = newStatus,
-                                isStreamAvailable = if (isLive) true else if (newStatus.contains("Reconnecting", true) || newStatus.contains("Connecting", true)) false else item.isStreamAvailable
+                                isStreamAvailable = if (isLive) true else item.isStreamAvailable
+                            )
+                        } else item
+                    }
+                }
+            },
+            onPacketHeartbeat = {
+                val now = System.currentTimeMillis()
+                _viewerSessions.update { list ->
+                    list.map { item ->
+                        if (item.roomCode == code) {
+                            item.copy(
+                                status = "🟢 LIVE",
+                                isStreamAvailable = true,
+                                lastFrameTimeMs = now
                             )
                         } else item
                     }
