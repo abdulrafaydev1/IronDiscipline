@@ -13,6 +13,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.core.content.ContextCompat
 import com.irondiscipline.app.util.PermissionHelper
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -91,6 +92,8 @@ class AlarmRingingActivity : ComponentActivity() {
     private var isAlarmDismissed = false
     private var isFollowUpAlarm = false
     private var followUpCode = ""
+    private var isTenSecondCodeVisible = false
+    private var preWakeCountdownMs = 0L
 
     private fun extractFollowUpDetails(intent: Intent?) {
         val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
@@ -103,30 +106,77 @@ class AlarmRingingActivity : ComponentActivity() {
             ?: prefs.getString("followup_alarm_code", "") ?: ""
     }
 
+    private fun ensureAlarmServiceRunning(intent: Intent?) {
+        if (!AlarmRingingService.isCurrentlyRinging) {
+            val alarmId = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
+                ?: intent?.getStringExtra("EXTRA_ALARM_ID")
+                ?: activeAlarmId
+            val alarmLabel = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
+                ?: intent?.getStringExtra("EXTRA_ALARM_LABEL")
+            val soundIndex = if (intent?.hasExtra(AlarmScheduler.EXTRA_SOUND_INDEX) == true) {
+                intent.getIntExtra(AlarmScheduler.EXTRA_SOUND_INDEX, 0)
+            } else {
+                intent?.getIntExtra("EXTRA_SOUND_INDEX", 0) ?: 0
+            }
+            val deleteAfter = if (intent?.hasExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING) == true) {
+                intent.getBooleanExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, false)
+            } else {
+                intent?.getBooleanExtra("EXTRA_DELETE_AFTER_RINGING", false) ?: false
+            }
+
+            val serviceIntent = Intent(applicationContext, AlarmRingingService::class.java).apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                putExtra("EXTRA_ALARM_ID", alarmId)
+                putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, alarmLabel)
+                putExtra("EXTRA_ALARM_LABEL", alarmLabel)
+                putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                putExtra("EXTRA_SOUND_INDEX", soundIndex)
+                putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
+                putExtra("EXTRA_DELETE_AFTER_RINGING", deleteAfter)
+                putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                putExtra("EXTRA_IS_FOLLOWUP_ALARM", isFollowUpAlarm)
+                putExtra("EXTRA_FOLLOWUP_CODE", followUpCode)
+            }
+            try {
+                ContextCompat.startForegroundService(applicationContext, serviceIntent)
+                Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY] ContextCompat.startForegroundService initiated from AlarmRingingActivity for alarmId=$alarmId")
+            } catch (e: Exception) {
+                Log.e("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY_ERROR] Failed to start AlarmRingingService from Activity: ${e.message}", e)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         activeActivityRef = java.lang.ref.WeakReference(this)
         isAlarmDismissed = false
 
-        // 1. Wake screen and display directly over lock screen
+        // 1. Acquire WakeLocks immediately so CPU and Screen turn ON without delay
+        AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
+
+        // 2. Wake screen and display directly over lock screen with FLAG_SECURE
         applyScreenAndLockFlags()
 
-        // 2. Prevent bypass via Back button press
+        // 3. Prevent bypass via Back button press
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 // Back button completely disabled until Math Hard or Follow-Up is solved
             }
         })
 
-        // 3. If Device Owner is active, restrict Power-Off menu via official Lock Task Mode
+        // 4. If Device Owner is active, restrict Power-Off menu via official Lock Task Mode
         PermissionHelper.enableLockTaskForAlarm(this)
 
         activeAlarmId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
             ?: intent.getStringExtra("EXTRA_ALARM_ID")
         extractFollowUpDetails(intent)
+        preWakeCountdownMs = intent.getLongExtra("EXTRA_PRE_WAKE_COUNTDOWN_MS", 0L)
 
-        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY] AlarmRingingActivity onCreate for Alarm ID=$activeAlarmId, isFollowUp=$isFollowUpAlarm, code=$followUpCode")
+        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY] AlarmRingingActivity onCreate for Alarm ID=$activeAlarmId, isFollowUp=$isFollowUpAlarm, code=$followUpCode, preWakeMs=$preWakeCountdownMs")
         ActiveAlarmSessionState.initSession(activeAlarmId)
+
+        // Ensure AlarmRingingService is active and ringing audio at 100% volume
+        ensureAlarmServiceRunning(intent)
 
         val repository = AlarmRepository.getInstance(applicationContext)
         val alarm = if (activeAlarmId != null) repository.getAlarmById(activeAlarmId!!) else null
@@ -137,6 +187,10 @@ class AlarmRingingActivity : ComponentActivity() {
                     alarm = alarm,
                     isFollowUpAlarm = isFollowUpAlarm,
                     savedFollowUpCode = followUpCode,
+                    initialPreWakeMs = preWakeCountdownMs,
+                    onCodeScreenVisibleChange = { isVisible ->
+                        isTenSecondCodeVisible = isVisible
+                    },
                     onDismissCompleted = {
                         completeAlarmAndDismiss(activeAlarmId, if (isFollowUpAlarm) "FOLLOWUP_SOLVED" else "MATH_SOLVED")
                     }
@@ -149,6 +203,7 @@ class AlarmRingingActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         activeActivityRef = java.lang.ref.WeakReference(this)
+        AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
         applyScreenAndLockFlags()
 
         // Re-assert Lock Task Mode restriction if Device Owner is active
@@ -158,14 +213,18 @@ class AlarmRingingActivity : ComponentActivity() {
             ?: intent.getStringExtra("EXTRA_ALARM_ID")
         val isNewTrigger = intent.getBooleanExtra("EXTRA_IS_NEW_TRIGGER", false)
         extractFollowUpDetails(intent)
+        preWakeCountdownMs = intent.getLongExtra("EXTRA_PRE_WAKE_COUNTDOWN_MS", 0L)
 
-        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY_RETRIGGER] onNewIntent incomingAlarmId=$incomingAlarmId, activeAlarmId=$activeAlarmId, isNewTrigger=$isNewTrigger, isFollowUp=$isFollowUpAlarm")
+        Log.i("IronAlarmTrace", "[IronAlarmTrace:STAGE6_ACTIVITY_RETRIGGER] onNewIntent incomingAlarmId=$incomingAlarmId, activeAlarmId=$activeAlarmId, isNewTrigger=$isNewTrigger, isFollowUp=$isFollowUpAlarm, preWakeMs=$preWakeCountdownMs")
 
         if (isNewTrigger || incomingAlarmId != activeAlarmId) {
             isAlarmDismissed = false
             activeAlarmId = incomingAlarmId
             ActiveAlarmSessionState.initSession(incomingAlarmId)
         }
+
+        // Ensure ringing service is running
+        ensureAlarmServiceRunning(intent)
     }
 
     override fun onResume() {
@@ -187,12 +246,19 @@ class AlarmRingingActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
+            try {
+                val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                km?.requestDismissKeyguard(this, null)
+            } catch (_: Exception) {}
         }
         @Suppress("DEPRECATION")
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_SECURE
         )
     }
 
@@ -217,19 +283,25 @@ class AlarmRingingActivity : ComponentActivity() {
 
     /**
      * Intercept physical key presses in dispatchKeyEvent to prevent volume muting,
-     * back navigation, or power button bypass while alarm is ringing.
+     * screenshot capture, back navigation, or power button bypass while alarm is ringing
+     * or while the 10-second 5-digit code is visible.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
-        if (AlarmRingingService.isCurrentlyRinging && !isAlarmDismissed) {
+        val isRinging = AlarmRingingService.isCurrentlyRinging
+        val isCodeVisible = isTenSecondCodeVisible
+        if ((isRinging || isCodeVisible) && !isAlarmDismissed) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN,
                 KeyEvent.KEYCODE_VOLUME_UP,
                 KeyEvent.KEYCODE_VOLUME_MUTE -> {
-                    restoreMaxAlarmVolume()
+                    if (isRinging) {
+                        restoreMaxAlarmVolume()
+                    }
                     return true
                 }
                 KeyEvent.KEYCODE_POWER,
+                KeyEvent.KEYCODE_SYSRQ,
                 KeyEvent.KEYCODE_BACK -> {
                     return true
                 }
@@ -239,18 +311,24 @@ class AlarmRingingActivity : ComponentActivity() {
     }
 
     /**
-     * Intercept hardware volume down and mute keys to maintain 100% alarm volume.
+     * Intercept hardware volume down and mute keys to maintain 100% alarm volume,
+     * and block screenshot combos while code is shown.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (AlarmRingingService.isCurrentlyRinging && !isAlarmDismissed) {
+        val isRinging = AlarmRingingService.isCurrentlyRinging
+        val isCodeVisible = isTenSecondCodeVisible
+        if ((isRinging || isCodeVisible) && !isAlarmDismissed) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN,
                 KeyEvent.KEYCODE_VOLUME_UP,
                 KeyEvent.KEYCODE_VOLUME_MUTE -> {
-                    restoreMaxAlarmVolume()
+                    if (isRinging) {
+                        restoreMaxAlarmVolume()
+                    }
                     return true
                 }
                 KeyEvent.KEYCODE_POWER,
+                KeyEvent.KEYCODE_SYSRQ,
                 KeyEvent.KEYCODE_BACK -> {
                     return true
                 }
@@ -317,6 +395,7 @@ class AlarmRingingActivity : ComponentActivity() {
         if (activeActivityRef?.get() === this) {
             activeActivityRef = null
         }
+        isTenSecondCodeVisible = false
         super.onDestroy()
     }
 
@@ -339,6 +418,8 @@ fun AlarmRingingScreen(
     alarm: AlarmItem?,
     isFollowUpAlarm: Boolean,
     savedFollowUpCode: String,
+    initialPreWakeMs: Long = 0L,
+    onCodeScreenVisibleChange: (Boolean) -> Unit = {},
     onDismissCompleted: () -> Unit
 ) {
     val context = LocalContext.current
@@ -384,6 +465,7 @@ fun AlarmRingingScreen(
 
     // 10-Second Countdown & Auto Home Redirect Handler (Stage 2)
     LaunchedEffect(showTenSecondCodeScreen) {
+        onCodeScreenVisibleChange(showTenSecondCodeScreen)
         if (showTenSecondCodeScreen) {
             for (sec in 10 downTo 1) {
                 countdownSeconds = sec
@@ -536,6 +618,26 @@ fun AlarmRingingScreen(
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.padding(top = 4.dp)
             )
+
+            // Pre-Wake Status Badge
+            if (initialPreWakeMs > 0 && !showTenSecondCodeScreen) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0x3300E5FF))
+                        .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "⚡ Waking Screen... Alarm Ringing in 5s",
+                        color = Color(0xFF00E5FF),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 

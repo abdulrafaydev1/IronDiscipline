@@ -162,11 +162,12 @@
         <activity
             android:name=".alarm.AlarmRingingActivity"
             android:exported="false"
-            android:launchMode="singleTask"
+            android:launchMode="singleInstance"
             android:taskAffinity=""
             android:excludeFromRecents="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
+            android:showOnLockScreen="true"
             android:lockTaskMode="if_whitelisted"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|navigation"
             android:theme="@style/Theme.IronDiscipline" />

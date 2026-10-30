@@ -107,7 +107,7 @@ class AlarmRingingService : Service() {
 
     companion object {
         const val TAG = "IronAlarmTrace"
-        const val CHANNEL_ID = "iron_alarm_lockscreen_channel_v2"
+        const val CHANNEL_ID = "iron_alarm_fullscreen_channel"
         const val NOTIFICATION_ID = 2026
 
         @Volatile
@@ -241,6 +241,9 @@ class AlarmRingingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Step 0: Physically turn display ON and acquire full CPU wakelock immediately
+        AlarmWakeLockManager.acquireRingingWakeLocks(applicationContext)
+
         val alarmId = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_ID)
         val alarmLabel = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_LABEL)
         val repository = AlarmRepository.getInstance(applicationContext)
