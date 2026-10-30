@@ -588,17 +588,73 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private fun checkBackupAlarmWatchdog() {
         try {
             val alarms = AlarmRepository.getInstance(applicationContext).alarmsFlow.value
-            val hasEnabledAlarms = alarms.any { it.isEnabled }
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val isFollowUpPending = prefs.getBoolean("followup_alarm_pending", false)
+            val followUpTriggerMs = prefs.getLong("followup_alarm_trigger_ms", 0L)
+            val hasEnabledAlarms = alarms.any { it.isEnabled } || isFollowUpPending
 
-            // Allow natural sleep when idle to comply with Android power management
+            // Keeps CPU ticking via maintainPendingAlarmCpuLock so 1s timer never freezes during screen-off sleep
             AlarmWakeLockManager.maintainPendingAlarmCpuLock(this, hasEnabledAlarms)
 
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (AlarmRingingService.isCurrentlyRinging || prefs.getBoolean("is_alarm_currently_ringing", false)) {
                 return
             }
 
             val now = System.currentTimeMillis()
+
+            // 1. Follow-Up 5-Minute Alarm Check (100% Screen-Off Guaranteed Trigger)
+            if (isFollowUpPending && followUpTriggerMs > 0L && now >= followUpTriggerMs) {
+                val followUpCode = prefs.getString("followup_alarm_code", "") ?: ""
+                val soundIndex = prefs.getInt("followup_alarm_sound_index", 0)
+                val label = prefs.getString("followup_alarm_label", "5-Min Wake-Up Verification") ?: "5-Min Wake-Up Verification"
+
+                prefs.edit()
+                    .putBoolean("followup_alarm_pending", false)
+                    .putBoolean("is_current_ring_followup", true)
+                    .commit()
+
+                Log.i("IronAlarmTrace", "[IronAlarmTrace:FOLLOWUP_WATCHDOG_TRIGGER] 5-Min Follow-Up Alarm Triggering now=$now, target=$followUpTriggerMs, code=$followUpCode")
+
+                // Physically wake screen ON
+                AlarmWakeLockManager.acquireRingingWakeLocks(this)
+
+                // Initialize persistent math problem session state
+                ActiveAlarmSessionState.initSession("FOLLOWUP_5MIN_ALARM")
+
+                // Start AlarmRingingService in foreground
+                val serviceIntent = Intent(applicationContext, AlarmRingingService::class.java).apply {
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, "FOLLOWUP_5MIN_ALARM")
+                    putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, label)
+                    putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                    putExtra("EXTRA_IS_FOLLOWUP_ALARM", true)
+                    putExtra("EXTRA_FOLLOWUP_CODE", followUpCode)
+                    putExtra(AlarmReceiver.EXTRA_RECEIVER_TRIGGER_MS, now)
+                    putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                }
+                ContextCompat.startForegroundService(applicationContext, serviceIntent)
+
+                // Launch AlarmRingingActivity directly
+                val activityIntent = Intent(applicationContext, AlarmRingingActivity::class.java).apply {
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, "FOLLOWUP_5MIN_ALARM")
+                    putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, label)
+                    putExtra(AlarmScheduler.EXTRA_SOUND_INDEX, soundIndex)
+                    putExtra("EXTRA_IS_FOLLOWUP_ALARM", true)
+                    putExtra("EXTRA_FOLLOWUP_CODE", followUpCode)
+                    putExtra(AlarmReceiver.EXTRA_RECEIVER_TRIGGER_MS, now)
+                    putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    )
+                }
+                try {
+                    startActivity(activityIntent)
+                } catch (e: Exception) {
+                    Log.e("IronAlarmTrace", "[IronAlarmTrace:FOLLOWUP_ACTIVITY_ERROR] Error starting follow-up AlarmRingingActivity: ${e.message}")
+                }
+                return
+            }
 
             for (alarm in alarms) {
                 if (!alarm.isEnabled) continue

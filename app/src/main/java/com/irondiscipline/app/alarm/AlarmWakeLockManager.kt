@@ -24,20 +24,33 @@ object AlarmWakeLockManager {
     private var ringingScreenWakeLock: PowerManager.WakeLock? = null
 
     /**
-     * Cleanly manages idle state.
-     * Note: AlarmManager.setAlarmClock() natively programs hardware RTC wake-ups.
-     * Indefinite partial wake locks prior to trigger are deliberately avoided to comply
-     * with Android Power Management guidelines and prevent the OS / OEM power managers
-     * from forcing the app into RESTRICTED Standby Bucket.
+     * Holds CPU PARTIAL_WAKE_LOCK during pending alarms and the 5-minute follow-up countdown,
+     * ensuring background loops, watchdog timers, and AlarmManager events never freeze during screen-off sleep.
      */
     @Synchronized
     fun maintainPendingAlarmCpuLock(context: Context, hasEnabledAlarms: Boolean) {
+        val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
         try {
-            if (pendingCpuWakeLock?.isHeld == true) {
-                pendingCpuWakeLock?.release()
-                Log.d(TAG, "Pending Alarm CPU WakeLock released (allowing natural low-power sleep)")
+            if (hasEnabledAlarms) {
+                if (pendingCpuWakeLock == null) {
+                    pendingCpuWakeLock = pm.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK,
+                        "IronDiscipline:PendingCpuWakeLock"
+                    ).apply { setReferenceCounted(false) }
+                }
+                if (pendingCpuWakeLock?.isHeld == false) {
+                    pendingCpuWakeLock?.acquire(10 * 60 * 1000L) // 10-minute safety timeout
+                    Log.d(TAG, "Pending Alarm CPU WakeLock acquired (10m timeout for 5-min follow-up)")
+                }
+            } else {
+                if (pendingCpuWakeLock?.isHeld == true) {
+                    pendingCpuWakeLock?.release()
+                    Log.d(TAG, "Pending Alarm CPU WakeLock released")
+                }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Error managing pendingCpuWakeLock: ${e.message}")
+        }
     }
 
     /**

@@ -83,8 +83,21 @@ class AlarmReceiver : BroadcastReceiver() {
             }
 
             else -> {
-                // Record timestamp to avoid duplicate triggers within 60s from watchdog
                 val prefs = context.getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
+                val isFollowUp = safeIntent.getBooleanExtra("EXTRA_IS_FOLLOWUP_ALARM", false) ||
+                    alarmId == "FOLLOWUP_5MIN_ALARM"
+                val followUpCode = safeIntent.getStringExtra("EXTRA_FOLLOWUP_CODE")
+                    ?: prefs.getString("followup_alarm_code", "") ?: ""
+
+                if (isFollowUp) {
+                    prefs.edit()
+                        .putBoolean("followup_alarm_pending", false)
+                        .putBoolean("is_current_ring_followup", true)
+                        .commit()
+                    Log.i(TAG, "[IronAlarmTrace:STAGE3_RECEIVER] 5-Min Follow-Up Alarm Triggered! Code=$followUpCode")
+                }
+
+                // Record timestamp to avoid duplicate triggers within 60s from watchdog
                 prefs.edit().putLong("last_triggered_timestamp_$alarmId", now).commit()
 
                 // Initialize persistent Math Hard questions session state for this alarm
@@ -98,6 +111,8 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
                     putExtra(EXTRA_RECEIVER_TRIGGER_MS, now)
                     putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                    putExtra("EXTRA_IS_FOLLOWUP_ALARM", isFollowUp)
+                    putExtra("EXTRA_FOLLOWUP_CODE", followUpCode)
                 }
                 try {
                     ContextCompat.startForegroundService(context, serviceIntent)
@@ -114,6 +129,8 @@ class AlarmReceiver : BroadcastReceiver() {
                     putExtra(AlarmScheduler.EXTRA_DELETE_AFTER_RINGING, deleteAfter)
                     putExtra(EXTRA_RECEIVER_TRIGGER_MS, now)
                     putExtra("EXTRA_IS_NEW_TRIGGER", true)
+                    putExtra("EXTRA_IS_FOLLOWUP_ALARM", isFollowUp)
+                    putExtra("EXTRA_FOLLOWUP_CODE", followUpCode)
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_SINGLE_TOP or

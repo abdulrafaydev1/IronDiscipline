@@ -122,6 +122,12 @@ class AlarmRingingService : Service() {
         @Volatile
         var currentRingingAlarmLabel: String? = null
 
+        @Volatile
+        var isCurrentRingFollowup: Boolean = false
+
+        @Volatile
+        var currentFollowUpCode: String? = null
+
         fun stopAndCleanup(context: Context, alarmId: String? = null) {
             val targetAlarmId = alarmId ?: currentRingingAlarmId
             Log.i(TAG, "[IronAlarmTrace:STAGE7_DISMISS] stopAndCleanup invoked for alarmId=$targetAlarmId, previousRingingId=$currentRingingAlarmId")
@@ -129,6 +135,8 @@ class AlarmRingingService : Service() {
             isCurrentlyRinging = false
             currentRingingAlarmId = null
             currentRingingAlarmLabel = null
+            isCurrentRingFollowup = false
+            currentFollowUpCode = null
 
             serviceInstance?.unregisterReceiversCleanly()
 
@@ -173,6 +181,8 @@ class AlarmRingingService : Service() {
                 )
                 putExtra(AlarmScheduler.EXTRA_ALARM_ID, currentRingingAlarmId)
                 putExtra(AlarmScheduler.EXTRA_ALARM_LABEL, currentRingingAlarmLabel)
+                putExtra("EXTRA_IS_FOLLOWUP_ALARM", isCurrentRingFollowup)
+                putExtra("EXTRA_FOLLOWUP_CODE", currentFollowUpCode)
             }
             try {
                 context.startActivity(intent)
@@ -268,10 +278,17 @@ class AlarmRingingService : Service() {
         }
 
         // Update active ringing state and metadata
+        val isFollowUp = intent?.getBooleanExtra("EXTRA_IS_FOLLOWUP_ALARM", false)
+            ?: (alarmId == "FOLLOWUP_5MIN_ALARM")
+        val followUpCode = intent?.getStringExtra("EXTRA_FOLLOWUP_CODE")
+            ?: getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE).getString("followup_alarm_code", null)
+
         isCurrentlyRinging = true
         currentRingingAlarmId = alarmId
         currentRingingAlarmLabel = alarm?.label ?: alarmLabel
         currentlyRingingAlarmId = alarmId
+        isCurrentRingFollowup = isFollowUp
+        currentFollowUpCode = followUpCode
 
         // Synchronously record ringing state to persistent preferences
         val prefs = getSharedPreferences("iron_discipline_prefs", Context.MODE_PRIVATE)
@@ -411,6 +428,8 @@ class AlarmRingingService : Service() {
         val fullScreenIntent = Intent(this, AlarmRingingActivity::class.java).apply {
             data = Uri.parse("irondiscipline://alarm_ring/${alarmId ?: "active"}")
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra("EXTRA_IS_FOLLOWUP_ALARM", isCurrentRingFollowup)
+            putExtra("EXTRA_FOLLOWUP_CODE", currentFollowUpCode)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -447,6 +466,8 @@ class AlarmRingingService : Service() {
         currentRingingAlarmId = null
         currentRingingAlarmLabel = null
         currentlyRingingAlarmId = null
+        isCurrentRingFollowup = false
+        currentFollowUpCode = null
 
         unregisterReceiversCleanly()
         if (serviceInstance === this) {
