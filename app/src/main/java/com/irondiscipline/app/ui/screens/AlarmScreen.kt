@@ -1045,7 +1045,7 @@ fun CreateAlarmDialog(
                         }
                     )
 
-                    // 4. Brain Mission Enforced: Math Hard (3 Multi-Digit Equations Mandatory)
+                    // 4. Brain Mission Enforced: Math Hard (5 Multi-Digit Equations Mandatory)
                     BrainMissionEnforcedCard()
 
                     // 5. 12 Hard Synthesized Alarm Sounds with Preview
@@ -1465,7 +1465,7 @@ fun BrainMissionEnforcedCard() {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "🧠 3 Multi-Digit Equations: You must solve 3 multi-digit equations (e.g., (14 × 7) + 39) sequentially. Back button and simple dismiss are strictly locked until answered correctly.",
+                text = "🧠 5 Multi-Digit Equations: You must solve 5 multi-digit equations (e.g., (14 × 7) + 39) sequentially. Back button and simple dismiss are strictly locked until answered correctly.",
                 color = Color(0xFFE2E8F0),
                 fontSize = 11.sp,
                 lineHeight = 16.sp

@@ -14,6 +14,8 @@ data class MathProblem(val text: String, val answer: Int)
  */
 object ActiveAlarmSessionState {
 
+    const val TOTAL_QUESTIONS = 5
+
     @Volatile
     var activeAlarmId: String? = null
         private set
@@ -31,23 +33,21 @@ object ActiveAlarmSessionState {
 
         activeAlarmId = alarmId
         solvedCount = 0
-        problemsList = listOf(
-            generateHardMathProblem(),
-            generateHardMathProblem(),
+        problemsList = List(TOTAL_QUESTIONS) {
             generateHardMathProblem()
-        )
+        }
         currentProblem = problemsList.firstOrNull()
     }
 
     /**
      * Increments solved count and advances to the next question.
-     * Returns true when all 3 questions have been completed.
+     * Returns true when all 5 questions have been completed.
      */
     @Synchronized
     fun onQuestionSolved(): Boolean {
         val nextSolved = solvedCount + 1
         solvedCount = nextSolved
-        if (nextSolved >= 3) {
+        if (nextSolved >= TOTAL_QUESTIONS) {
             return true
         }
         currentProblem = problemsList.getOrNull(nextSolved) ?: generateHardMathProblem()

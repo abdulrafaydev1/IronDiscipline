@@ -346,7 +346,7 @@ fun AlarmRingingScreen(
             userAnswerText = ""
             errorMessage = null
             if (allDone) {
-                // Completed all 3 equations -> Dismiss immediately & trigger unlock
+                // Completed all 5 equations -> Dismiss immediately & trigger unlock
                 onDismissCompleted()
             }
         } else {
@@ -454,7 +454,7 @@ fun AlarmRingingScreen(
                     }
 
                     Text(
-                        text = "Solve 3 multi-digit equations to unlock dismissal (${solvedCount + 1} of 3)",
+                        text = "Solve ${ActiveAlarmSessionState.TOTAL_QUESTIONS} multi-digit equations to unlock dismissal (${solvedCount + 1} of ${ActiveAlarmSessionState.TOTAL_QUESTIONS})",
                         color = Color(0xFF8A99AD),
                         fontSize = 11.sp,
                         textAlign = TextAlign.Center,
@@ -532,7 +532,7 @@ fun AlarmRingingScreen(
                         )
                     ) {
                         Text(
-                            text = if (solvedCount == 2) "SOLVE & DISMISS ALARM" else "SUBMIT ANSWER (${solvedCount + 1}/3)",
+                            text = if (solvedCount == ActiveAlarmSessionState.TOTAL_QUESTIONS - 1) "SOLVE & DISMISS ALARM" else "SUBMIT ANSWER (${solvedCount + 1}/${ActiveAlarmSessionState.TOTAL_QUESTIONS})",
                             fontWeight = FontWeight.Black,
                             fontSize = 13.sp
                         )
@@ -561,7 +561,7 @@ fun AlarmRingingScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "STANDARD DISMISS LOCKED (SOLVE ALL 3 EQUATIONS)",
+                        text = "STANDARD DISMISS LOCKED (SOLVE ALL ${ActiveAlarmSessionState.TOTAL_QUESTIONS} EQUATIONS)",
                         color = Color(0xFFFF7B93),
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
