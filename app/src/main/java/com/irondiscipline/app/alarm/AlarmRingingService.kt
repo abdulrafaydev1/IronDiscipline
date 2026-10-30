@@ -158,6 +158,10 @@ class AlarmRingingService : Service() {
             stopAndCleanup(context, alarmId)
         }
 
+        fun stopAlarm(context: Context, alarmId: String? = null) {
+            stopAndCleanup(context, alarmId)
+        }
+
         fun bringAlarmScreenToFront(context: Context) {
             if (!isCurrentlyRinging) return
             val intent = Intent(context, AlarmRingingActivity::class.java).apply {

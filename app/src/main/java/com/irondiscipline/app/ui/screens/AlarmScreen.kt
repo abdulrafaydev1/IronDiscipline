@@ -710,7 +710,7 @@ fun AlarmItemCard(
 
                 // Math Mission Badge
                 if (alarm.dismissChallenge != "NONE") {
-                    val missionLabel = if (alarm.dismissChallenge == "MATH_HARD") "🔥 Hard Math (3 Sums)" else "🧠 Math (3 Sums)"
+                    val missionLabel = if (alarm.dismissChallenge == "MATH_HARD") "🔥 Hard Math (5 Sums)" else "🧠 Math (5 Sums)"
                     BadgePill(
                         icon = Icons.Default.Psychology,
                         text = missionLabel,

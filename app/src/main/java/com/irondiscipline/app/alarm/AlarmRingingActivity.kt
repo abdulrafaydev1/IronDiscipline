@@ -256,7 +256,7 @@ class AlarmRingingActivity : ComponentActivity() {
         PermissionHelper.disableLockTaskForAlarm(this)
 
         // 2. Stop audio, vibration, and background foreground service
-        AlarmRingingService.stopAndCleanup(applicationContext, alarmId)
+        AlarmRingingService.stopAlarm(applicationContext, alarmId)
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && keyguardManager != null && keyguardManager.isKeyguardLocked) {
@@ -291,6 +291,7 @@ class AlarmRingingActivity : ComponentActivity() {
     }
 
     companion object {
+        const val TOTAL_MATH_QUESTIONS = 5
         private var activeActivityRef: java.lang.ref.WeakReference<AlarmRingingActivity>? = null
 
         fun releaseLockTaskIfActive() {
@@ -454,12 +455,49 @@ fun AlarmRingingScreen(
                     }
 
                     Text(
-                        text = "Solve ${ActiveAlarmSessionState.TOTAL_QUESTIONS} multi-digit equations to unlock dismissal (${solvedCount + 1} of ${ActiveAlarmSessionState.TOTAL_QUESTIONS})",
+                        text = "Solve 5 Math Hard Questions to Stop Alarm",
+                        color = Color(0xFFFFB300),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+
+                    val currentQuestion = (solvedCount + 1).coerceAtMost(AlarmRingingActivity.TOTAL_MATH_QUESTIONS)
+                    Text(
+                        text = "Question $currentQuestion of ${AlarmRingingActivity.TOTAL_MATH_QUESTIONS} • $solvedCount / ${AlarmRingingActivity.TOTAL_MATH_QUESTIONS} Solved",
                         color = Color(0xFF8A99AD),
                         fontSize = 11.sp,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
                     )
+
+                    // 5-Step Progress Indicator Dots / Bars: loop (1..5)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        for (step in 1..AlarmRingingActivity.TOTAL_MATH_QUESTIONS) {
+                            val isCompleted = step <= solvedCount
+                            val isCurrent = step == solvedCount + 1
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(
+                                        when {
+                                            isCompleted -> Color(0xFF00E676)
+                                            isCurrent -> Color(0xFFFFB300)
+                                            else -> Color(0xFF26334D)
+                                        }
+                                    )
+                            )
+                        }
+                    }
 
                     // Math Question Box
                     Box(
@@ -532,7 +570,11 @@ fun AlarmRingingScreen(
                         )
                     ) {
                         Text(
-                            text = if (solvedCount == ActiveAlarmSessionState.TOTAL_QUESTIONS - 1) "SOLVE & DISMISS ALARM" else "SUBMIT ANSWER (${solvedCount + 1}/${ActiveAlarmSessionState.TOTAL_QUESTIONS})",
+                            text = if (solvedCount == AlarmRingingActivity.TOTAL_MATH_QUESTIONS - 1) {
+                                "SOLVE & DISMISS ALARM (5/5)"
+                            } else {
+                                "SUBMIT ANSWER (${solvedCount + 1}/${AlarmRingingActivity.TOTAL_MATH_QUESTIONS})"
+                            },
                             fontWeight = FontWeight.Black,
                             fontSize = 13.sp
                         )
@@ -561,7 +603,7 @@ fun AlarmRingingScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "STANDARD DISMISS LOCKED (SOLVE ALL ${ActiveAlarmSessionState.TOTAL_QUESTIONS} EQUATIONS)",
+                        text = "STANDARD DISMISS LOCKED (SOLVE ALL 5 EQUATIONS)",
                         color = Color(0xFFFF7B93),
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,

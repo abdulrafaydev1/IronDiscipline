@@ -1786,7 +1786,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     /**
      * Dismisses the system Power Off / Restart / Shutdown menu if invoked while the alarm is actively ringing.
-     * Prevents bypassing the 3 Math Hard questions via the Android Global Actions dialog.
+     * Prevents bypassing the 5 Math Hard questions via the Android Global Actions dialog.
      */
     private fun guardActiveAlarmFromPowerDialog(event: AccessibilityEvent?) {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

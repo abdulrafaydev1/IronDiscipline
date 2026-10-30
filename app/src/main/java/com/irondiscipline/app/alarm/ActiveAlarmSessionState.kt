@@ -14,7 +14,7 @@ data class MathProblem(val text: String, val answer: Int)
  */
 object ActiveAlarmSessionState {
 
-    const val TOTAL_QUESTIONS = 5
+    const val TOTAL_MATH_QUESTIONS = 5
 
     @Volatile
     var activeAlarmId: String? = null
@@ -33,7 +33,7 @@ object ActiveAlarmSessionState {
 
         activeAlarmId = alarmId
         solvedCount = 0
-        problemsList = List(TOTAL_QUESTIONS) {
+        problemsList = List(TOTAL_MATH_QUESTIONS) {
             generateHardMathProblem()
         }
         currentProblem = problemsList.firstOrNull()
@@ -47,7 +47,7 @@ object ActiveAlarmSessionState {
     fun onQuestionSolved(): Boolean {
         val nextSolved = solvedCount + 1
         solvedCount = nextSolved
-        if (nextSolved >= TOTAL_QUESTIONS) {
+        if (nextSolved >= TOTAL_MATH_QUESTIONS) {
             return true
         }
         currentProblem = problemsList.getOrNull(nextSolved) ?: generateHardMathProblem()
